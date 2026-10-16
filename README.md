@@ -38,6 +38,14 @@
 
 ## 配置环境
 
+大部分脚本为R编写，需要安装相应R包。
+所有脚本均需要：R包:argparser
+mRNA_DEG ---- R包：stringr,ggplot2,ComplexHeatmap,circlize,limma,dplyr,RColorBrewer
+enrich_term ---- python模块：multiprocessing,argparse,time,os,re
+                 R包：ggplot2,clusterProfiler,ReactomePA,dplyr,DOSE,qs2,
+                 所分析物种的R包：org.Hs.eg.db,org.Mm.eg.db,org.Rn.eg.db
+
+
 ## 使用方法
 
 1. 所有脚本均需要在 Linux 系统下运行。
