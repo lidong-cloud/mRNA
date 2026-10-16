@@ -3,8 +3,11 @@
 
 ## 使用方法
 1.所有脚本均需要在linux系统下运行。
+
 2.给脚本可执行权限。
+
   chmod 755 mRNA_DEG
+  
 3.查看脚本帮助文档，哪些是脚本必须参数，哪些是可选参数，补全必须参数即可分析。
-<img width="1020" height="714" alt="image" src="https://github.com/user-attachments/assets/3949e740-d098-47fe-b9ce-8f38745fe015" />
+<img width="600" alt="image" src="https://github.com/user-attachments/assets/3949e740-d098-47fe-b9ce-8f38745fe015" />
 
