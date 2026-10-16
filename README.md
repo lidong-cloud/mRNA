@@ -13,5 +13,7 @@
    
    ```bash
    mRNA_DEG --help
-<img width="600" alt="image" src="https://github.com/user-attachments/assets/3949e740-d098-47fe-b9ce-8f38745fe015" />
+<div align="center">
+  <img src="https://github.com/user-attachments/assets/3949e740-d098-47fe-b9ce-8f38745fe015" width="600" alt="运行截图" />
+</div>
 
