@@ -1,0 +1,502 @@
+#!/usr/bin/Rscript
+library(argparser)
+
+parse <- arg_parser("=====================================================================\nThis script is used for WGCNA analysis\n=====================================================================",
+    name = "\n
+            step one: WGCNA -e ./GSE*_supp/DEG/All_samples_expression.xls -c ./GSE*_config\n
+            step two: WGCNA -t ./Trait.xls -W ./GSE*_supp/WGCNA/\n
+            step one and two: WGCNA -e ./supp/DEG/All_samples_expression.xls -t ./Trait.xls\n
+            step three: WGCNA -m blue,black,yellow -p bian,bian,FM -W ./GSE*_supp/WGCNA/\n
+            Hubgene select suggestion: 1.degree>30,GS>0.5; 2.MM>0.8,GS>0.2\n
+            WGCNA",
+    hide.opts = T)
+parse <- add_argument(parse, "--expression",
+    help="Files with gene expression,is required for step one, such as: supp/DEG/All_samples_expression.xls")
+parse <- add_argument(parse, "--config",
+    help="config file containing sample information, is required for step one")
+parse <- add_argument(parse, "--trait_file", 
+    help="The trait file of samples,is required for step two")
+parse <- add_argument(parse, "--WGCNA_dir",
+    help="Save location of WGCNA data file, is required for step two or three, default = './GSE*_supp/WGCNA/'")
+parse <- add_argument(parse, "--w1_Rdata",
+    help="Save location of WGCNA step1 Rdata file, default = './GSE*_supp/WGCNA/WGCNA_1.qs2'")
+parse <- add_argument(parse, "--module",
+    help="The module used in the step3 analysis of WGCNA")
+parse <- add_argument(parse, "--phenotype",
+    help="The phenotype used in the step3 analysis of WGCNA, Modules and phenotypes should correspond to each other")
+parse <- add_argument(parse, "--ngene", default = 25000, 
+    help="Maximum number of genes for WGCNA analysis")
+parse <- add_argument(parse, "--Soft_cut", default = 'best', 
+    help="The value cut off to select soft threshold(power0)")
+parse <- add_argument(parse, "--GS_cut", default = 0.5, 
+    help="The Gene Significance(GS) cut off to select hub gene")
+parse <- add_argument(parse, "--degree_cut", default = 30,
+    help="The Connectivity(degree) cut off to select hub gene, only one this parameter and MM_cut can be provide")
+parse <- add_argument(parse, "--MM_cut", default = 0,
+    help="The Module Membership(MM) cut off to select hub gene, only one this parameter and degree_cut can be provide")
+
+argv <- parse_args(parse)
+
+if (is.na(argv$expression) & is.na(argv$config) & is.na(argv$trait_file) & is.na(argv$module)) {
+   cat('\nYou are missing the necessary parameters for running.\n\n');print(parse);quit()
+}
+
+if (!is.na(argv$WGCNA_dir)) {
+  WGCNA_dir <- argv$WGCNA_dir
+}else if(endsWith(strsplit(argv$expression,'/')[[1]][1],'_supp')) {
+  WGCNA_dir <- paste0(strsplit(argv$expression,'/')[[1]][1],'/WGCNA/')
+}else if(endsWith(strsplit(argv$expression,'/')[[1]][2],'_supp')) {
+  WGCNA_dir <- paste0(strsplit(argv$expression,'/')[[1]][2],'/WGCNA/')
+}else{WGCNA_dir <- './supp/WGCNA/'}
+
+if (!is.na(argv$w1_Rdata)) {
+  w1_Rdata <- argv$w1_Rdata
+}else{w1_Rdata <- paste0(WGCNA_dir,'/WGCNA_1.qs2')}
+
+#if(is.na(argv$module) & is.na(argv$config)){cat('\nThe parameters <config> is required\n\n');print(parse);quit()}
+if(!file.exists(w1_Rdata) & (is.na(argv$expression)|is.na(argv$config))){cat('\nThe parameters <expression> and <config> is required for step one\n\n');print(parse);quit()}
+if(!is.na(argv$trait_file)){
+  if(is.na(argv$expression) & is.na(WGCNA_dir)){cat('\nThe parameters <expression> and <WGCNA_dir> must be provided only one for step two\n\n');print(parse);quit()}
+}
+if(file.exists(w1_Rdata) & !file.exists(paste0(WGCNA_dir,'/2.Trait/degree_GS_MM.xls')) & is.na(argv$trait_file)){
+  cat('\nThe parameters <trait_file> is required for step two\n\n');print(parse);quit()
+}
+if(!(is.na(argv$module)==is.na(argv$phenotype))){cat('\nThe parameters <module> and <phenotype> is required for step three\n\n');print(parse);quit()}
+if(!is.na(argv$module) & !is.na(argv$phenotype)){
+  if(length(strsplit(argv$module,',')[[1]])!=length(strsplit(argv$phenotype,',')[[1]])){cat('\nThe module you provided does not correspond to phenotype. Please check\n\n');print(parse);quit()}
+}
+if(argv$degree_cut!=30 & argv$MM_cut!=0){cat('\nThe parameters <degree_cut> and <MM_cut> must be provided only one for step three\n\n');print(parse);quit()}
+
+expression <- argv$expression
+config <- argv$config
+trait_file <- argv$trait_file
+module <- argv$module
+phenotype <- argv$phenotype
+ngene <- as.numeric(argv$ngene)
+Soft_cut <- argv$Soft_cut
+GS_cut <- as.numeric(argv$GS_cut)
+degree_cut <- as.numeric(argv$degree_cut)
+MM_cut <- as.numeric(argv$MM_cut)
+
+# expression <- 'G:/Ledug/Desktop/b-handle/WGCNA/All_samples_expression.xls'
+# trait_file <- 'G:/Ledug/Desktop/b-handle/WGCNA/Trait.xls'
+# WGCNA_dir <- 'G:/Ledug/Desktop/b-handle/WGCNA/'
+# w1_Rdata <- 'G:/Ledug/Desktop/b-handle/WGCNA/WGCNA_1.RData'
+# module <- 'blue,black,yellow'
+# phenotype <- 'bian,bian,FM'
+# Soft_cut <- 0.8
+# GS_cut <- 0.5
+# degree_cut <- 30
+# MM_cut <- 0.5
+
+suppressMessages({
+library(ComplexHeatmap)
+library(flashClust)
+library(patchwork)
+library(circlize)
+library(ggplot2)
+library(igraph)
+library(tibble)
+library(dplyr)
+library(WGCNA)
+library(qs2)
+options(stringsAsFactors = FALSE)
+cat('\n')
+enableWGCNAThreads(nThreads=20)
+})
+
+data_filter <- function(expression, ngene, WGCNA_dir){
+  datExpr <- data.frame(readr::read_tsv(expression)) %>% column_to_rownames(var = names(.)[1])
+  f<-function(x) sum(x!=0)/length(x)
+  datExpr <- t(datExpr[(apply(datExpr,1,f) >= 0.3),])
+  
+  gsg <- goodSamplesGenes(datExpr, verbose = 3,minNSamples = 3);cat('\n')
+  if (!gsg$allOK){
+    if (sum(!gsg$goodGenes)>0)
+      printFlush(paste("Removing genes:", paste(colnames(datExpr)[!gsg$goodGenes], collapse = ", ")))
+    if (sum(!gsg$goodSamples)>0)
+      printFlush(paste("Removing samples:", paste(rownames(datExpr)[!gsg$goodSamples], collapse = ", ")))
+    datExpr <- datExpr[gsg$goodSamples, gsg$goodGenes]
+  }
+  
+  if (file.exists(paste0(dirname(expression),'/Normal__Tumor/All_Gene_expr.xls'))) {
+    df <- readr::read_tsv(paste0(dirname(expression),'/Normal__Tumor/All_Gene_expr.xls'))
+    diffgene <- df[(df$P.Value < 0.05)&(abs(df$logFC)) > 0.58,]$Geneid
+    gene <- setdiff(colnames(datExpr),diffgene)
+    SD <- sort(apply(datExpr[,gene], 2, sd, na.rm = TRUE),decreasing = T)[1:min(length(gene),ngene-length(diffgene))]
+    gname <- c(diffgene,names(SD))
+  }else{SD <- sort(apply(datExpr, 2, sd, na.rm = TRUE),decreasing = T)[1:min(ncol(datExpr),ngene)];gname <- names(SD)}
+  newdata <- datExpr[,gname]
+  write.table(cbind(sample=row.names(newdata),newdata), file =paste0(WGCNA_dir, "/datExpr.xls"), 
+              sep ="\t", quote=F, col.names = T, row.names = F)
+  
+  sampleTree <- hclust(dist(newdata), method = "average")
+  pdf(paste0(WGCNA_dir, "/Sample_Clustering.pdf"),max(0.25*nrow(datExpr),7))
+  par(fig = c(0.01, 1, 0, 1))
+  plot(sampleTree,hang=-1,main = "Sample hierarchical clustering tree", sub="",
+       xlab="", cex.lab = 1.2,cex.axis = 1.2, cex.main = 1.5)
+  dev.off()
+  
+  return(newdata)
+}
+
+select_power <- function(datExpr, WGCNA_dir, Soft_cut){
+  powers <- c(1:22)
+  sft <- pickSoftThreshold(datExpr, powerVector = powers, verbose = 5);dat <- sft$fitIndices
+
+  if (Soft_cut=='best') {
+    R2 <- abs(dat$SFT.R.sq)
+    if (length(R2[R2>0.9])>0) {Soft_cut <- 0.9}else if(length(R2[R2>0.85])>0){Soft_cut <- 0.85}else{Soft_cut <- 0.8}
+    cat(paste0('\n\n最佳R方值为:              >>>>>  ',Soft_cut,'  <<<<<'))
+  }
+
+  power0 <- powers[-sign(dat[,3])*dat[,2] > Soft_cut][1]
+  if(is.na(power0)){power0 = 22}
+  cat(paste0('\n\n最佳power值为:            >>>>>   ',power0,'   <<<<<\n\n\n'))
+
+  p1<-ggplot(dat, aes(x = Power, y = abs(SFT.R.sq))) + 
+    geom_point(size = 3.5, shape = 23, color = 'black',fill = 'blue') + 
+    geom_line(size = 0.4)+ theme_classic()+
+    geom_hline(yintercept = as.numeric(Soft_cut), lty=2, col="red",linewidth=0.7)+
+    xlab("Soft Threshold (power)")+ylab(expression(paste("signed ", R^2)))+
+    ggtitle('Scale Free Topology Model Fit')+
+    theme(plot.title = element_text(size = 27,hjust = 0.5),
+          axis.title = element_text(size = 26), 
+          axis.text = element_text(size = 17))
+
+  p2<-ggplot(dat, aes(x = Power, y = mean.k.)) + 
+    geom_point(size = 3.5, shape = 23, color = 'black',fill = 'green') + 
+    geom_line(size = 0.4)+ theme_classic()+
+    xlab("Soft Threshold (power)")+ ylab("Mean Connectivity")+
+    ggtitle('Mean Connectivity')+
+    theme(plot.title = element_text(size = 27,hjust = 0.5),
+          axis.title = element_text(size = 26), 
+          axis.text = element_text(size = 17))
+
+  pdf(paste0(WGCNA_dir, "/Scale_Free_Topology_Model_Fit.pdf"))
+  print(p1/p2);dev.off()
+  
+  return(power0)
+}
+
+construct_network <- function(datExpr, power0, WGCNA_dir){
+  nGenes <- ncol(datExpr)
+  filename <- paste0(WGCNA_dir, "/TOM")
+  net <- blockwiseModules(datExpr, power = power0,
+                          TOMType = "signed", 
+                          maxBlockSize = 8000,#单个块的最大基因数
+                          minModuleSize = ceiling(nGenes/2000)*10,
+                          deepSplit = 1, #划分模块的数量,值越大模块越多(0~4)
+                          reassignThreshold = 0.1, #基因分模块后,根据与模块的相关度,重分模块阈值,值越小分越多（0:0.3,0.1）
+                          mergeCutHeight = 0.30, #合并模块阈值,值越大合并越多(0.1:0.4,0.05)
+                          numericLabels = TRUE, pamRespectsDendro = FALSE,
+                          saveTOMs = TRUE,nThreads=20,
+                          saveTOMFileBase = filename,
+                          verbose = 3)
+  return(net)
+}
+
+basic_plot <- function(net,moduleColors,MEs,config,W1_dir){
+  pdf(paste0(W1_dir, "/Gene_cluster_tree.pdf"))
+  plotDendroAndColors(net$dendrograms[[1]], moduleColors[net$blockGenes[[1]]],
+                      "Module colors",
+                      dendroLabels = FALSE, hang = 0.03,
+                      addGuide = TRUE, guideHang = 0.05)
+  dev.off()
+
+  pdf(paste0(W1_dir, "/module_relationshpip_tree_heatmap.pdf"))
+  plotEigengeneNetworks(MEs, "", marDendro = c(0,4,1,2), marHeatmap = c(3,4,1,2), 
+                        cex.lab = 0.8, xLabelsAngle = 90)
+  dev.off()
+
+  col <- c("#E64B35FF", "#00A087FF", "#3C5488FF", "palevioletred", "#7E6148FF", "lightblue", "#F39B7FFF")
+
+  model <- gsub('ME','',names(MEs))
+  names(model) <- model
+  model = rowAnnotation(model = model,col = list(model = model),show_annotation_name = F,show_legend = F)
+
+  config <- read.csv(config,sep = '\t',header = F,row.names = 1)[row.names(MEs),]
+  names(col) <- unique(config$V2)
+  group = HeatmapAnnotation(group = config$V2,col = list(group = col[1:length(unique(config$V2))]),show_annotation_name = F,
+        annotation_legend_param = list(labels_gp = gpar(fontsize = 12)))
+
+  n <- min(max(MEs),abs(min(MEs)))
+  col_fun = colorRamp2(c(n, 0, -n), c("red", "white", "green"))
+  p <- Heatmap(t(MEs),border = T,
+        cluster_rows = F,
+        cluster_columns = F,
+        row_names_side = "left",
+        left_annotation = model,
+        top_annotation = group,
+        show_heatmap_legend = T,
+        heatmap_legend_param = list(title = "",legend_height = unit(10, "cm")),
+        col = col_fun,
+        column_title = 'Sample expression pattern\n',
+        column_title_side = 'top',
+        column_title_gp = gpar(fontsize = 20),
+        show_column_names = ifelse(length(row.names(MEs))>30,F,T),
+        column_names_rot = 60)
+
+  pdf(paste0(W1_dir, "/Sample_expression_pattern.pdf"), width =7.5, height = 9)
+  draw(p, merge_legend = TRUE)
+  dev.off()
+}
+
+get_network <- function(TOM, moduleLabels, moduleColors, W1_dir){
+  modgene = names(moduleLabels)
+  modlabel = moduleLabels
+  
+  cyt <- exportNetworkToCytoscape(TOM,
+                           weighted = TRUE,
+                           threshold = 0.2, # 调整 threshold 参数会影响网络中节点数目
+                           nodeNames = modgene,
+                           altNodeNames = moduleColors,
+                           nodeAttr = modlabel)
+  edge <- cyt$edgeData
+  colnames(edge) <- c("Geneid1","Geneid2","weight","direction","module1","module2")
+  write.table(edge, paste0(W1_dir, "/Allgene_CytoscapeInput_edges.txt"), 
+              row.names=FALSE, sep="\t", quote=FALSE)
+}
+
+network_heatmap <- function(TOM, moduleColors, power0, W1_dir){
+  dissTOM = 1-TOM
+  
+  if (ncol(TOM)>1000) {select = floor(seq(1,ncol(TOM),ncol(TOM)/999))} else {
+    select = seq(1,ncol(TOM))}
+  selectTOM = dissTOM[select, select]
+  selectTree = hclust(as.dist(selectTOM), method = "average")
+  selectColors = moduleColors[select]
+  
+  plotTOM = selectTOM^power0
+  diag(plotTOM) = NA
+  pdf(paste0(W1_dir, "/Network_heatmap.pdf"))
+  TOMplot(plotTOM, selectTree, selectColors, main = "")
+  dev.off()
+}
+
+trait_correlation <- function(MEs, datTraits, W2_dir){
+  modTraitCor = cor(MEs, datTraits, use = "p")
+  modTraitP = corPvalueStudent(modTraitCor, nrow(MEs))
+  
+  data <- cbind(row.names(modTraitCor),modTraitCor,modTraitP)
+  colnames(data) <- c('module',paste(colnames(modTraitCor),'_cor',sep = ''),paste(colnames(modTraitCor),'_pvalue',sep = ''))
+  write.table(data, paste0(W2_dir, "/module_trait_relationship.xls"), 
+              sep ="\t", quote=F, col.names = T, row.names = F)
+  
+  return(list(modTraitCor,modTraitP))
+}
+
+plot_correlation <- function(modTraitCor, modTraitP, W2_dir){
+  modTraitP[modTraitP<0.001] <- '***'
+  modTraitP[modTraitP<0.01 & modTraitP >= 0.001] <- '**'
+  modTraitP[modTraitP<0.05 & modTraitP >= 0.01] <- '*'
+  modTraitP[modTraitP >= 0.05] <- ''
+  textMatrix = paste("\n", round(modTraitCor, 3), "\n", modTraitP, sep = "")
+  #if (ncol(modTraitP)>16) {textMatrix = paste(round(modTraitCor, 3))}
+  dim(textMatrix) = dim(modTraitCor)
+  
+  value <- min(max(abs(modTraitCor)),1)
+  pdf(paste0(W2_dir, "/module_trait_relationship.pdf"), 
+      width = 3+0.8*ncol(modTraitCor), height = 10.5)
+  par(mar = c(8, 11.2, 3, 1))
+  labeledHeatmap(modTraitCor, xLabels = colnames(modTraitCor), 
+                 yLabels = row.names(modTraitCor), 
+                 ySymbols = row.names(modTraitCor), 
+                 colorLabels = F, 
+                 colors = blueWhiteRed(50), 
+                 textMatrix = textMatrix, setStdMargins = F, 
+                 cex.lab = 1.5,cex.text = 1,
+                 zlim = c(-value,value),
+                 main = '')
+  if(ncol(modTraitCor)<4){
+    title(main = "Module-trait relationships", adj = 1, line = 1, cex.main = 2)
+    }else if(ncol(modTraitCor)<6){
+      title(main = "Module-trait relationships", adj = 0, line = 1, cex.main = 2)
+      }else{title(main = "Module-trait relationships", adj = 0.4, line = 1, cex.main = 2)}
+  
+  dev.off()
+}
+
+degree_GS_MM <- function(datExpr, datTraits, power0, moduleColors, MEs, W2_dir){
+  #计算基因表达量与基因基因表达量的相关性，连接度/连通性(degree)
+  ADJ <- abs(cor(datExpr,use="p"))^power0
+  degree <- intramodularConnectivity(ADJ, moduleColors)
+  
+  #计算基因表达量与性状的相关性(GS,geneTraitSignificance)
+  GS <- as.data.frame(cor(datExpr, datTraits, use = "p"))
+  names(GS) = paste(colnames(datTraits), "GS", sep="_")
+  
+  #计算基因表达量与模块第一主成分的相关性(MM,geneModuleMembership)
+  modNames = substring(names(MEs), 3)
+  MM = as.data.frame(cor(datExpr, MEs, use = "p"))
+  names(MM) = paste(modNames, "MM", sep="_")
+  
+  data <- cbind(Geneid=row.names(degree),module=moduleColors,degree=degree$kWithin,GS,MM)
+  write.table(data, paste0(W2_dir, "/degree_GS_MM.xls"), 
+              row.names=FALSE, quote=F, sep="\t")
+}
+
+open_pdf <- function(WGCNA_dir,MM_cut,n){
+  x<-1;y<-n
+  if (n==4) {x<-2;y<-2}
+  if (n>4) {x<-2;y<-3}
+  if (n>6) {x<-ceiling(n/4);y<-4}
+  
+  if (MM_cut==0) {
+    file <-  paste0(WGCNA_dir, "/2.Trait/GS_vs_degree_weight.pdf")
+  } else {
+    file <-  paste0(WGCNA_dir, "/2.Trait/GS_vs_MM_weight.pdf")
+  }
+  pdf(file,width =3.6*y, height = 4.1*x)
+  par(mfrow=c(x,y))
+  par(mar = c(5,5,5.5,2))
+}
+
+write_data <- function(WGCNA_dir,allnet,hubgene,module,phenotype){
+  hubgene_file <- paste0(WGCNA_dir, '/2.Trait/hubgene_', module,'_', phenotype, ".xls")
+  write.table(hubgene, hubgene_file, quote=F, row.names=FALSE, sep="\t")
+  # if(nrow(hubgene)>100){
+  #   cmd1 <- paste0('enrich_term -g ',hubgene_file,' -s ',species,' -o ',WGCNA_dir,'/4.hubgene_enrich/')
+  #   cmd2 <- paste0('mv ',WGCNA_dir,'/4.hubgene_enrich/2.Trait/* ',WGCNA_dir,'/4.hubgene_enrich && rm -rf ',WGCNA_dir,'/4.hubgene_enrich/2.Trait')
+  #   system(paste0(cmd1,' && ',cmd2))
+  # }
+  
+  edge <- allnet[allnet$Geneid1 %in% hubgene$Geneid & allnet$Geneid2 %in% hubgene$Geneid,]
+  node <- hubgene[hubgene$Geneid %in% unique(c(edge$Geneid1,edge$Geneid2)),]
+  write.table(edge, 
+              paste0(WGCNA_dir, '/3.hubgene_net/Cytoscape_', module,'_',phenotype,"_hubgene_edge.txt"), 
+              row.names=FALSE, sep="\t", quote=FALSE)
+  write.table(node, 
+              paste0(WGCNA_dir, '/3.hubgene_net/Cytoscape_', module,'_',phenotype,"_hubgene_node.txt"), 
+              row.names=FALSE, sep="\t", quote=FALSE)
+}
+
+################################################################################################
+WGCNA_step1 <- function(expression, config, ngene, WGCNA_dir){
+  cat("\n\n<==========================Running WGCNA step one==========================>\n\n")
+  W1_dir <- paste0(WGCNA_dir,'/1.Module/')
+  if (!dir.exists(W1_dir)){dir.create(W1_dir)}
+
+  datExpr <- data_filter(expression, ngene, WGCNA_dir);dim(datExpr)
+  power0 <- select_power(datExpr, WGCNA_dir, Soft_cut)
+  
+  net <- construct_network(datExpr, power0, WGCNA_dir)
+  load(net$TOMFiles[1], verbose=T)
+  TOM <- as.matrix(TOM)
+  if (file.exists(net$TOMFiles[1])){file.remove(net$TOMFiles[1])}
+  
+  moduleLabels = net$colors
+  moduleGenes = names(moduleLabels)
+  moduleColors = labels2colors(moduleLabels)
+  MEs = orderMEs(moduleEigengenes(datExpr, moduleColors)$eigengenes)
+  
+  modules_file = data.frame(moduleGenes, moduleLabels, moduleColors)[net$goodGenes,]
+  write.table(modules_file, paste0(W1_dir, "/gene_module.xls"), 
+              row.names=FALSE, sep="\t",quote=F)
+  write.table(cbind(sample=row.names(MEs),MEs), paste0(W1_dir, "/Sample_expression_pattern_MEs.xls"), 
+              row.names=FALSE, sep="\t",quote=F)
+  
+  basic_plot(net,moduleColors,MEs,config,W1_dir)
+  
+  get_network(TOM, moduleLabels, moduleColors, W1_dir)
+  
+  network_heatmap(TOM, moduleColors, power0, W1_dir)
+  
+  qs_save(list(datExpr, power0, net, moduleGenes, moduleLabels, moduleColors, MEs, TOM),
+       file = paste0(WGCNA_dir, "/WGCNA_1.qs2"))
+  cat("\n<=========================WGCNA step one completed=========================>\n\n\n")
+  
+  return(paste0(WGCNA_dir, "/WGCNA_1.Rdata"))
+}
+
+WGCNA_step2 <- function(w1_Rdata, trait_file, WGCNA_dir){
+  cat("\n\n<==========================Running WGCNA step two==========================>\n\n")
+  cat('Analyze the correlation between module and phenotype\n')
+  W2_dir <- paste0(WGCNA_dir,'/2.Trait/')
+  if (!dir.exists(W2_dir)){dir.create(W2_dir)}
+  
+  df <- qs_read(w1_Rdata)
+  datExpr <- df[[1]]; power0<- df[[2]]; net<- df[[3]]; moduleGenes<- df[[4]]; moduleLabels<- df[[5]]; moduleColors<- df[[6]]; MEs<- df[[7]]; TOM<- df[[8]]
+
+  datTraits <- as.matrix(read.table(trait_file, header = TRUE, row.names = 1, sep = "\t", quote = ""))
+  sampleName = intersect(rownames(datExpr),rownames(datTraits))
+  datExpr <- datExpr[sampleName, ];MEs <- MEs[sampleName,]
+
+  traitname <- colnames(datTraits);datTraits <-  data.frame(datTraits[sampleName,])
+  colnames(datTraits) <- traitname;rownames(datTraits) <- sampleName
+  for(i in 1:ncol(datTraits)){if(is.character(datTraits[,i])) {datTraits[,i] <- as.numeric(factor(datTraits[,i]))}}
+
+  correlation <- trait_correlation(MEs, datTraits, W2_dir)
+
+  plot_correlation(correlation[[1]], correlation[[2]], W2_dir)
+  
+  degree_GS_MM(datExpr, datTraits, power0, moduleColors, MEs, W2_dir)
+  cat("\n<=========================WGCNA step two completed=========================>\n\n\n")
+}
+
+WGCNA_step3 <- function(WGCNA_dir,module,phenotype,GS_cut,degree_cut,MM_cut){
+  cat("\n<=========================Running WGCNA step three=========================>\n\n")
+  cat("loading data......\n\n")
+  W3_dir <- paste0(WGCNA_dir,'/3.hubgene_net/')
+  if (!dir.exists(W3_dir)){dir.create(W3_dir)}
+  allgene <- read.table(paste0(WGCNA_dir,'/2.Trait/degree_GS_MM.xls'),header = T,sep = '\t')
+  allnet <- readr::read_tsv(paste0(WGCNA_dir,'/1.Module/Allgene_CytoscapeInput_edges.txt'))
+  cat("\nloading complete......\n")
+  colnames(allgene) <- sapply(colnames(allgene),f<-function(x) strsplit(x,'_')[[1]][1])
+  module <- strsplit(module,',')[[1]]
+  phenotype <- strsplit(phenotype,',')[[1]]
+  
+  n<-length(module)
+  open_pdf(WGCNA_dir,MM_cut,n)
+  
+  for (i in 1:n) {
+    modulegene <- allgene[allgene$module==module[i],c('Geneid','module','degree',phenotype[i],module[i])]
+    colnames(modulegene) <- c('Geneid','module','degree','GS','MM')
+    modulegene$trait <- phenotype[i]
+    modulegene <- modulegene[,c('Geneid','module','trait','degree','GS','MM')]
+    
+    if (MM_cut==0) {
+      x<-modulegene$degree;xlab<-"Connectivity";v<-degree_cut
+      hubgene <- modulegene[modulegene$degree>degree_cut & abs(modulegene$GS)>GS_cut,]
+    } else {
+      x<-abs(modulegene$MM);xlab<-"Module Membership";v<-MM_cut
+      hubgene <- modulegene[abs(modulegene$MM)>MM_cut & abs(modulegene$GS)>GS_cut,]
+    }
+    verboseScatterplot(x, abs(modulegene$GS), col=module[i],
+                       main=paste(unique(modulegene$module),'and',phenotype[i],'\n'), 
+                       xlab = xlab, ylab = "Gene Significance", 
+                       cex.lab = 2.5, cex.main = 2.5,
+                       pch = 21)
+    abline(h=GS_cut, v=v, col = "gray30", lwd = 2, lty = 2)
+    write_data(WGCNA_dir,allnet,hubgene,module[i],phenotype[i])
+  }
+  dev.off()
+  cat("\n<========================WGCNA step three completed========================>\n\n\n")
+}
+################################################################################################
+if (!dir.exists(WGCNA_dir)){dir.create(WGCNA_dir)}
+
+contain <- ''
+if (!file.exists(paste0(WGCNA_dir,'/WGCNA_1.qs')) & !file.exists(w1_Rdata)) {
+  w1_Rdata <- WGCNA_step1(expression, config, ngene, WGCNA_dir);contain <- 'one'
+}
+
+if (!is.na(trait_file)) {WGCNA_step2(w1_Rdata, trait_file, WGCNA_dir);contain <- c(contain,'two')}
+
+if (!is.na(module)) {
+  WGCNA_step3(WGCNA_dir,module,phenotype,GS_cut,degree_cut,MM_cut);contain <- c(contain,'three')
+}
+
+contain <- contain[contain>0]
+if (length(contain)>1) {
+  str <- paste0('\nThe WGCNA steps run for you are: step ',paste0(contain[1:length(contain)-1],collapse = ' '),' and ',contain[length(contain)],'\n')
+} else if (length(contain)==1) {
+  str <- paste0('\nThe WGCNA steps run for you are: step ',contain,'\n')
+} else {cat('\n');print(parse);quit()}
+
+cat(str)
+cat("************************************************\n")
+cat("*                                              *\n")
+cat("*              Done, done, done                *\n")
+cat("*                                              *\n")
+cat("************************************************\n")

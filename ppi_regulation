@@ -1,0 +1,227 @@
+#!/nas/software/miniconda3/bin/Rscript
+suppressPackageStartupMessages({
+library(argparser)
+})
+
+parse <- arg_parser("=====================================================================\nThis script is used for ppi analysis\n=====================================================================",hide.opts = T)
+
+parse <- add_argument(parse, "--gfile", 
+    help="The list file used for ppi analysis, the first column must be the analysis element, such as Symbol, Ensembl and protein_id, etc. and other columns can contain the logfc information of this element")
+parse <- add_argument(parse, "--taxid", default='9606',
+    help="Taxid of the analyzed species")
+parse <- add_argument(parse, "--cutscore", 
+    help="The combined score cut off for the ppi analyse, single gene defaults to 600 for generation 2, and defaults to 400 for other analyses")
+parse <- add_argument(parse, "--logfc", default=0.32,
+    help="If your data contains logfc information, this parameter will be used to determine the up-down information")
+parse <- add_argument(parse, "--Geneid",
+    help="If you want to analyze the ppi for some specific genes, please provide")
+parse <- add_argument(parse, "--n", default=2,
+    help="Algebra of upward search,such as:1,2")
+parse <- add_argument(parse, "--rebuild", default=F,
+    help="Whether to rebuild the ppi database")
+parse <- add_argument(parse, "--outdir", 
+    help="Output directory of ppi analysis results [default: GSE*_supp/ppi/]")
+
+argv <- parse_args(parse)
+if(is.na(argv$gfile)){cat('\nThe parameter <gfile> is required\n\n');print(parse);quit()}
+if(argv$n==1 & is.na(argv$Geneid)){cat('\nGeneid must be provided if parameter n is provided\n\n');print(parse);quit()}
+if(!(is.na(argv$n) | argv$n %in% c(1,2))){cat('\nThe values of n are 1, 2\n\n');print(parse);quit()}
+if(!is.na(argv$Geneid)){
+  if(is.na(argv$cutscore) & argv$n==2){
+    argv$cutscore <- 600
+    cat('\nAdjust the cutscore limit to 600\n')
+  }
+}
+if(is.na(argv$cutscore)){argv$cutscore <- 400}
+gfile <- argv$gfile
+taxid <- argv$taxid
+cutscore <- as.numeric(argv$cutscore)
+logfc <- as.numeric(argv$logfc)
+Geneid <- argv$Geneid
+n <- as.numeric(argv$n)
+rebuild <- argv$rebuild
+
+if(endsWith(strsplit(gfile,'/')[[1]][1],'_supp')) {
+    outdir <- paste0(strsplit(gfile,'/')[[1]][1],'/ppi/')
+  }else if(endsWith(strsplit(gfile,'/')[[1]][2],'_supp')) {
+    outdir <- paste0(strsplit(gfile,'/')[[1]][2],'/ppi/')
+  }else{outdir <- './supp/ppi/'}
+
+suppressPackageStartupMessages({
+library(dplyr)
+library(igraph)
+library(ggraph)
+library(showtext)
+showtext_auto()
+})
+
+# gfile <- 'G:/Ledug/Desktop/b-handle/ppi/stress__NC_vs_Patient__Normal_vs_function.venn.IntersectionGene.xls'
+# taxid <- 9606
+# outdir <- 'G:/Ledug/Desktop/b-handle/ppi/'
+# cutscore <- 400 # combined_score
+# Rebuild <- F # T & F
+
+Get_genedata <- function(gfile,logfc) {
+  gene <- read.table(gfile,header = T,sep = '\t')
+  logFC <- grep('logfc',colnames(gene),ignore.case=T)
+  gene <- as.data.frame(gene[,c(1,logFC)])
+  colnames(gene)[1] <- "ID"
+  if (ncol(gene)>1) {
+    gene <- gene[,1:2]
+    colnames(gene) <- c("ID","logFC")
+    gene$regulation <- ifelse(gene$logFC>=logfc,'up',ifelse(gene$logFC<=-logfc,'down','stable'))
+    gene <- gene[,c(1,3)]}
+  return(gene)
+}
+
+Get_database <- function(taxid,rebuild) {
+  database_file <- paste0('/nas/database/ppi/',taxid,'.STRING.db')
+  
+  if (!file.exists(database_file) | rebuild == T) {
+    cat("\n<==========================Construction database==========================>\n\n")
+    download.file(paste0('https://stringdb-downloads.org/download/protein.aliases.v12.0/',taxid,'.protein.aliases.v12.0.txt.gz'),'./aliases.txt.gz')
+    download.file(paste0('https://stringdb-downloads.org/download/protein.info.v12.0/',taxid,'.protein.info.v12.0.txt.gz'),'./info.txt.gz')
+    download.file(paste0('https://stringdb-downloads.org/download/protein.links.v12.0/',taxid,'.protein.links.v12.0.txt.gz'),'./links.txt.gz')
+    
+    aliases <- read.csv('./aliases.txt.gz',sep = '\t')
+    info <- read.csv('./info.txt.gz',sep = '\t')
+    links <- read.csv('./links.txt.gz',sep = ' ')
+    
+    database <- list(aliases,info,links)
+    for (i in c('./aliases.txt.gz','./info.txt.gz','./links.txt.gz',database_file)) {if (file.exists(i)) {file.remove(i)}}
+    save(database,file = database_file)
+    cat("<=====================Database construction completed=====================>\n\n")} 
+  else {
+    cat("\n<============================Loading database=============================>\n\n")
+    cat(paste0('loading: ',database_file))
+    load(database_file)
+    cat("\n\n<=======================Database loading completed========================>\n\n")
+  }
+  return(database)
+}
+
+mapping <- function(gene,database) {
+  mapped <- merge(gene,database[[2]],by.x = 'ID', by.y = "preferred_name")[,1:3] %>%
+    distinct(ID,X.string_protein_id,.keep_all= TRUE)
+  
+  rate <- round(100*length(unique(mapped$ID))/length(gene$ID),2)
+  cat(paste0(rate,'% of the genes you provided were successfully mapped to the STRING database\n'))
+  
+  if (rate<60) {
+    cat("\nThe mapping rate of your data to the database is too low. We don't think the data you input is a Gene symbol ID")
+    cat("\n<===========================Re-checkup mapping============================>\n")
+    mapped <- merge(gene,database[[1]],by.x = 'ID',by.y = "alias")
+    n <- max(table(mapped$source))
+    name <- names(table(mapped$source)[table(mapped$source)==n][1])
+    mapped <- mapped[mapped$source==name,]
+    rate <- round(100*length(unique(mapped$ID))/length(gene$ID),2)
+    cat(paste0("\nWe detected that when using ",name," mapping, the mapping rate was the highest(",rate,"%), and used this mapping relationship for follow-up analysis\n"))
+    cat("\n<==========================Re-checkup completed===========================>\n\n")
+  }
+  return(mapped)
+}
+
+net_plot <- function(net,nodes,outdir,n) {
+  if (ncol(nodes)==2) {
+    V(net)$regulation <- nodes$regulation
+    p1 <- ggraph(net,layout = 'auto')+
+      geom_edge_fan(aes(edge_width=width), color = "grey60", show.legend = F)+
+      #geom_node_point(aes(size=size, color=regulation))+
+      geom_node_point(aes(color=regulation),size=5)+
+      scale_color_manual(values=c("up" = "#FC8D62","down" = "#66C2A5", "stable" = "#8DA0CB"))+
+      geom_node_text(aes(label=name), size = 2, repel = T)+
+      scale_edge_width(range = c(0.2,1))+
+      scale_size_continuous(range = c(1,10))+
+      guides(size=F)+
+      theme_graph()
+    
+    p2 <- ggraph(net,layout = "linear", circular = TRUE)+
+      geom_edge_arc(aes(edge_width=width), color = "grey60", show.legend = F)+
+      #geom_node_point(aes(size=size, color=regulation))+
+      geom_node_point(aes(color=regulation),size=5)+
+      scale_color_manual(values=c("up" = "#FC8D62","down" = "#66C2A5", "stable" = "#8DA0CB"))+
+      geom_node_text(aes(label=name), size = 2, repel = T)+
+      scale_edge_width(range = c(0.2,1))+
+      scale_size_continuous(range = c(1,10))+
+      guides(size=F)+
+      theme_graph()
+    if(n==2){n<-1.5;w<-5.3} else {w<-3.8}
+    pdf(paste0(outdir,"/ppi_circular.pdf"),width = w,height = 2.9*n)
+    print(p2)
+    dev.off()
+  }
+  
+  if (ncol(nodes)==1)  {
+    p1 <- ggraph(net,layout = 'auto')+
+      geom_edge_fan(, color = "grey60")+
+      geom_node_point(size=5,color='blue',alpha=0.8)+
+      geom_node_text(aes(label=name), size = 2, repel = T)+
+      theme_void()
+    
+    p2 <- ggraph(net,layout = "linear", circular = TRUE)+
+      geom_edge_arc(, color = "grey60")+
+      geom_node_point(size=5,color='blue',alpha=0.8)+
+      geom_node_text(aes(label=name), size = 2, repel = T)+
+      theme_void()
+    
+    pdf(paste0(outdir,"/ppi_circular.pdf"),width = 3*n,height = 3*n)
+    print(p2)
+    dev.off()
+  }
+  
+  pdf(paste0(outdir,"/ppi.pdf"),width = 3.8*n,height = 2.9*n)
+  print(p1)
+  dev.off()
+}
+
+ppi_analysis <- function(gene,database,cutscore,mapped,outdir,Geneid,n) {
+  cat('\n\n                            Start ppi analysis                             \n\n')
+  linksdb <- database[[3]][database[[3]]$combined_score>=cutscore,]
+  info <- linksdb[linksdb$protein1 %in% mapped$X.string_protein_id & linksdb$protein2 %in% mapped$X.string_protein_id,]
+
+  links <- info %>%
+    mutate(from = mapped[match(protein1, mapped$X.string_protein_id), "ID"]) %>% 
+    mutate(to = mapped[match(protein2, mapped$X.string_protein_id), "ID"]) %>%  
+    dplyr::select(from,to,combined_score)
+  
+  links <- links %>% mutate(from_c = count(., from)$n[match(from, count(., from)$from)]) %>%
+    mutate(to_c = count(., to)$n[match(to, count(., to)$to)]) %>%
+    filter(!(from_c <= 2 & to_c <= 2)) %>%
+    dplyr::select(1,2,3)
+  if(!is.na(Geneid)){
+    Geneid <- strsplit(Geneid,',')[[1]]
+    Geneid <- unique(links[links$from %in% Geneid,n])
+    print(Geneid);print(paste0('Algebra of upward search: ',n))
+    links <- links[links$from %in% Geneid | links$to %in% Geneid,]
+    }
+  
+  nodes <- links %>% {data.frame(ID = c(.$from, .$to))} %>% distinct() %>% 
+    left_join(.,gene,by='ID')
+  
+  write.table(links,paste0(outdir,"/Cytoscape.links.txt"), 
+              sep ="\t",quote=F,col.names =T,row.names=F)
+  write.table(nodes,paste0(outdir,"/Cytoscape.nodes.txt"), 
+              sep ="\t",quote=F,col.names =T,row.names=F)
+  cat('\nThe data of ppi analysis has been exported, and you can also use this data to plot in cytoscape\n\n')
+  
+  net <- igraph::graph_from_data_frame(d=links,vertices=nodes,directed = F)
+  if(nrow(nodes)>100){V(net)$name <- ifelse(degree(net)>=nrow(gene)/4,V(net)$name,'')}
+  E(net)$width <- as.numeric((scale(E(net)$combined_score)+3)/6)
+  
+  net_plot(net,nodes,outdir,n)
+}
+
+##########################################################################################
+if (!file.exists(outdir)){dir.create(outdir)}
+gene <- Get_genedata(gfile,logfc)
+database <- Get_database(taxid,rebuild)
+mapped <- mapping(gene,database)
+ppi_analysis(gene,database,cutscore,mapped,outdir,Geneid,n)
+
+
+
+
+
+
+
+

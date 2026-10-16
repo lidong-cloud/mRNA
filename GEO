@@ -1,0 +1,98 @@
+#!/usr/bin/env python3
+
+import os
+import argparse
+
+parser = argparse.ArgumentParser(
+        description="This script is used to pre-process some GEO data",
+        formatter_class=argparse.RawTextHelpFormatter,
+        usage='''GEO [options]
+        Examples:
+        GEO -g GSE28146_series_matrix.txt.gz -a GPL570.annot.gz
+        '''
+        )
+parser.add_argument("-g", "--GSE_file",
+        dest="GSE_file",
+        type=str,
+        default=False,
+        help="GSE data to be processed, such as GSE28146_series_matrix.txt.gz",
+        required=True
+        )
+parser.add_argument("-a", "--GPL_file",
+        dest="GPL_file",
+        type=str,
+        default=False,
+        help="The GPL annotation file of GSE data, such as GPL570.annot.gz",
+        required=True
+        )
+parser.add_argument("-o", "--outdir",
+        dest="outdir",
+        type=str,
+        default='./',
+        help="Output directory of results; default='./'",
+        required=False
+        )
+
+argv = vars(parser.parse_args())
+GSE_file = argv['GSE_file']
+GPL_file = argv['GPL_file']
+outdir = argv['outdir']
+
+out1 = outdir + '/' + os.path.split(GSE_file)[1].split('_')[0] + '_exp.raw.xls'
+out2 = outdir + '/' + os.path.split(GPL_file)[1].split('.')[0].split('-')[0] + '_anno.xls'
+out3 = outdir + '/' + os.path.split(GSE_file)[1].split('_')[0] + '_exp.raw2.xls'
+OutGSE = outdir + '/' + os.path.split(GSE_file)[1].split('_')[0] + '_exp.xls'
+OutSample = outdir + '/' + os.path.split(GSE_file)[1].split('_')[0] + '_sample'
+
+cmd1 = """zcat %s|sed 's/!Sample_title/ID/g'|grep -v '!\\|ID_REF'|sed 1d|sed 's/"//g'|sed '1s/ /_/g'|sed '1s/\\//_/g'|sed '1s/\\[//g'|sed '1s/\\]//g'|sed '1s/-/_/g'|sed '1s/,/_/g'|sed '1s/\\./_/g'|sed '1s/__/_/g'|sed '1s/__/_/g' > %s""" %(GSE_file,out1)
+cmd2 = """zcat -f %s|awk 'substr($1,1,1)!="#" && substr($1,1,1)!="!" && substr($1,1,1)!="^"{print $0}' > %s""" %(GPL_file,out2)
+cmd3 = """inner_join %s %s ID %s && cut -f 2- %s|sed 's/ //g' > %s""" %(out2,out1,out3,out3,OutGSE)
+cmd4 = """less -S %s|head -n 1|tr '\\t' '\\n'|sed 1d > %s""" %(OutGSE,OutSample)
+
+R_code_file = outdir + '/R_code.R'
+R_code = """library(dplyr)
+
+GPL_file <- '%s'
+GPL_ID <- strsplit(basename(GPL_file),'_')[[1]][1]
+GPL <- read.csv(GPL_file,sep = '\t')
+
+if (colnames(GPL)[3]=='Gene.symbol') {
+    colnames(GPL)[3]="Geneid"
+  } else if ('GENE_SYMBOL' %s colnames(GPL)) {
+    GPL$Geneid <- GPL$GENE_SYMBOL
+  } else if ('gene_assignment' %s colnames(GPL)) {
+    GPL$Geneid <- unlist(lapply(strsplit(GPL$gene_assignment,'//'),function(x) gsub(' ','',x[2])))
+  } else if ('Gene.Symbol' %s colnames(GPL)) {
+    GPL$Geneid <- GPL$Gene.Symbol
+  } else if ('GeneSymbol' %s colnames(GPL)) {
+    if (colnames(GPL)[9]=='GeneSymbol' & 'Gene_Symbol' %s colnames(GPL)){
+      GPL$Geneid <- paste(GPL$GeneSymbol,GPL$Gene_Symbol,sep = '')
+    }else{GPL$Geneid <- GPL$GeneSymbol}
+  } else if ('ILMN_Gene' %s colnames(GPL)) {
+    GPL$Geneid <- GPL$ILMN_Gene
+  } else if (GPL_ID %s c('GPL17629')) {
+    GPL <- read.csv('/nas/genome/Homo_sapiens/gene.xls',sep = '\t')
+    colnames(GPL) <- c('Geneid','ID')
+  } else {
+    cat('>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> Your data is not compatible with this script <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<\n')
+  }
+
+GPL <- GPL[GPL$Geneid!='---',]
+anno <- GPL[nchar(GPL$Geneid)>0,c('ID','Geneid')] %s na.omit()
+
+Geneid_list <- strsplit(anno$Geneid,"///")
+Geneid_n <- sapply(Geneid_list,length)
+
+anno <- data.frame(ID=rep(anno$ID,Geneid_n),Geneid=unlist(Geneid_list))
+
+write.table(anno,'%s', 
+            sep ="\t",quote=F,col.names =T,row.names=F)
+""" %(out2,'%in%','%in%','%in%','%in%','%in%','%in%','%in%','%>%',out2)
+
+R_code_f = open(R_code_file, "w")
+R_code_f.writelines(R_code)
+R_code_f.close()
+os.system(cmd1 + ' && ' + cmd2 + ' && ' + '/usr/bin/Rscript ' + R_code_file + ' && ' + cmd3 + ' && ' + cmd4)
+
+cmd5 = """rm -rf %s %s %s %s""" %(out2,out1,out3,R_code_file)
+os.system(cmd5)

@@ -1,0 +1,125 @@
+#!/usr/bin/Rscript
+suppressPackageStartupMessages({
+library(argparser)
+})
+
+parse <- arg_parser("===================================================================\nThis script is used for Trend analysis\n===================================================================",hide.opts = T)
+
+parse <- add_argument(parse, "--exp_file", 
+    help="Gene expression file (such as: supp/DEG/All_samples_expression.xls)")
+parse <- add_argument(parse, "--config_file",
+    help="config file containing sample information")
+parse <- add_argument(parse, "--Group",
+    help="Groups used for trend analysis should be sorted according to the actual situation")
+parse <- add_argument(parse, "--gene",
+    help="Genes used for trend analysis can be comma-separated characters or files with gene names in the first column [default: all]")
+parse <- add_argument(parse, "--number",default=6,
+    help="The number of gene clusters in trend analysis")
+parse <- add_argument(parse, "--membership",default=0.4,
+    help="Limited value of membership")
+parse <- add_argument(parse, "--outdir",
+    help="Output directory of this result [default: ./*_supp/Trend/]")
+
+argv <- parse_args(parse)
+if(is.na(argv$exp_file)|is.na(argv$config_file)|is.na(argv$Group)){cat('\nThe parameters <exp_file> <config_file> and <Group> is required\n\n');print(parse);quit()}
+if(is.na(argv$gene)){argv$gene <- argv$exp_file}
+exp_file <- argv$exp_file
+config_file <- argv$config_file
+Group <- argv$Group
+gene <- argv$gene
+number <- argv$number
+membership <- argv$membership
+
+if (!is.na(argv$outdir)) {
+  outdir <- argv$outdir
+}else if(endsWith(strsplit(exp_file,'/')[[1]][1],'_supp')) {
+  outdir <- paste0(strsplit(exp_file,'/')[[1]][1],'/Trend/')
+}else if(endsWith(strsplit(exp_file,'/')[[1]][2],'_supp')) {
+  outdir <- paste0(strsplit(exp_file,'/')[[1]][2],'/Trend/')
+}else{outdir <- './supp/Trend'}
+
+suppressPackageStartupMessages({
+library(RColorBrewer)
+library(tibble)
+library(dplyr)
+library(Mfuzz)
+})
+
+# exp_file <- '/project/lidong/mRNA/DSCZQ241028/Result/mRNA_supp/DEG/All_samples_expression.xls'
+# config_file <- '/project/lidong/mRNA/DSCZQ241028/Result/all_config'
+# Group <- 'A0,A800,A1600,B0,B800,B1600'
+# gene <- '/project/lidong/mRNA/DSCZQ241028/Result/mRNA_supp/venn/Keloid_vs_A0__A800_vs_A0__A1600_vs_B0__A800_vs_B0__B1600.venn.IntersectionGene.xls'
+# number <- 6
+# outdir <- '/project/lidong/mRNA/DSCZQ241028/Result/mRNA_supp/Trend/'
+
+sort_data <- function(exp_file,config_file,Group,gene){
+  if (file.exists(gene)) {
+    Geneid <- read.csv(gene,sep = '\t',header = F)[,1]
+  }else{
+    Geneid <- strsplit(gene,',')[[1]]
+  }
+  
+  exp <- read.csv(exp_file,sep = '\t',header = T,row.names = 1)
+  exp <- exp[intersect(Geneid,rownames(exp)),]
+  config <- read.csv(config_file,sep = '\t',header = F)
+  group <- strsplit(Group,',')[[1]]
+  
+  f <- function(x) {g <- strsplit(as.character(x[2]),';')[[1]]
+  if (i %in% g) {return(as.character(x[1]))}
+  }
+  for (i in group) {
+    group_sample <- unique(unlist(apply(config,1,f)))
+    exp[,paste0('Mean_',i)] <- rowMeans(exp[,group_sample])
+  }
+  exp <- exp[,paste0('Mean_',group)]
+  colnames(exp) <- group
+  
+  return(exp)
+}
+
+Trend <- function(exp,number,membership,outdir){
+  extreme_max <- quantile(rowMeans(exp), 0.99)+2
+  exp <- as.matrix(exp[rowMeans(exp)<extreme_max,])
+  
+  input <- new('ExpressionSet', exprs=exp);cat('\n')
+  input <- filter.std(input, min.std=0.1);dev.off()
+  input <- standardise(input)
+  write.exprs(input, file=paste0(outdir,"/Standard_expresion.xls"))
+  mvalue <- mestimate(input)
+  set.seed(1314)
+  cl <- mfuzz(input,c = number, m = mvalue)
+  
+  if (number <= 4) {m <- 2; n <- 2}
+  if (number>4 & number<=6) {m <- 2; n <- 3}
+  if (number>6 & number<=9) {m <- 3; n <- 3}
+  if (number>9 & number<=12) {m <- 3; n <- 4}
+  
+  pdf(paste0(outdir,'/Trend_plot.pdf'),h=2.5*m,w=2.5*n)
+  mfuzz.plot2(input, cl, mfrow=c(m,n), centre = TRUE,centre.col="#2171B5",
+              time.labels = colnames(exp),cex.axis = 0.8,cex.lab = 0.8,
+              xlab = '',ylab = "Normalized Expression",min.mem=membership,
+              colo = 'fancy',new.window= FALSE,x11=FALSE)
+  dev.off()
+
+  cat("\n<================The number of genes in different clusters================>\n\n")
+  members <- acore(input, cl = cl, min.acore=membership)
+  for (i in seq(length(members))){
+    cluster <- members[[i]]
+    colnames(cluster) <- c("Geneid", "Member_Ship")
+    cat(paste0('cluster',i,': ',nrow(cluster),'\n\n'))
+    cluster <- cluster[order(cluster$Member_Ship,decreasing = T),]
+    write.table(cluster,paste0(outdir, "/Trend_cluster_", i, "_genes.xls"), 
+                quote = F, sep = "\t", row.names = F, col.names = T)
+  }
+}
+################################################################################
+system(paste0("mkdir -p ",outdir))
+exp <- sort_data(exp_file,config_file,Group,gene)
+Trend(exp,number,membership,outdir)
+
+
+cat("\n************************************************\n")
+cat("*                                              *\n")
+cat("*              Done, done, done                *\n")
+cat("*                                              *\n")
+cat("************************************************\n")

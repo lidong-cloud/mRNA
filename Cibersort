@@ -1,0 +1,233 @@
+#!/usr/bin/Rscript
+suppressPackageStartupMessages({
+library(argparser)
+library(ComplexHeatmap)
+library(RColorBrewer)
+library(tidyverse)
+library(CIBERSORT)
+library(reshape2)
+library(circlize)
+library(ggpubr)
+library(linkET)
+})
+
+parse <- arg_parser("===================================================================\nThis script uses Cibersort for immune infiltration analysis\n===================================================================",hide.opts = T)
+
+parse <- add_argument(parse, "--file", 
+    help="Gene expression file of DEG results (such as: DEG/Control__Treat/All_Gene_expr.xls or DEG/All_samples_expression.xls)")
+parse <- add_argument(parse, "--config_file",
+    help="config file containing sample information")
+parse <- add_argument(parse, "--gene",
+    help="Analyze the correlation between genes and immune cells, If there are multiple genes, separate them with commas")
+parse <- add_argument(parse, "--outdir",
+    help="Output directory of this result [default='./*_supp/Cibersort/']")
+
+argv <- parse_args(parse)
+if(is.na(argv$file)|is.na(argv$config_file)){cat('\nThe parameters <file> and <config_file> is required\n\n');print(parse);quit()}
+file <- argv$file
+config_file <- argv$config_file
+gene <- argv$gene
+
+if (!is.na(argv$outdir)) {
+  outdir <- argv$outdir
+}else if(endsWith(strsplit(file,'/')[[1]][1],'_supp')) {
+  outdir <- paste0(strsplit(file,'/')[[1]][1],'/Cibersort/')
+}else if(endsWith(strsplit(file,'/')[[1]][2],'_supp')) {
+  outdir <- paste0(strsplit(file,'/')[[1]][2],'/Cibersort/')
+}else{outdir <- './supp/Cibersort'}
+
+# file <- '/project/lidong/mRNA/DSZHC250811/Empa/BBB/1.DE/Count_supp/DEG/Cont__Empa/All_Gene_expr.xls'
+# config_file <- '/project/lidong/mRNA/DSZHC250811/Empa/BBB/1.DE/Count_config'
+# gene <- 'Egfr,Ppara,Fabp3,Cacna2d1,Ptpn1'
+# outdir <- '/project/lidong/mRNA/DSZHC250811/Empa/BBB/1.DE/Count_supp/Cibersort2/'
+
+data(LM22)
+
+color <-c("#E64B35FF","#4DBBD5FF","#00A087FF","#3C5488FF","#F39B7FFF",
+          "#8491B4FF","#91D1C2FF","#7E6148FF","#B09C85FF","#008B45FF",
+          '#E63863', '#53A85F', '#F1BB72', '#F3B1A0', '#D6E7A3', 
+          '#57C3F3', '#476D87','#E95C59', '#E59CC4', '#AB3282', 
+          '#23452F', '#BD956A')
+
+Cibersort_analysis <- function(file,config_file,outdir){
+  if(!file.exists(outdir)){dir.create(outdir)}
+  
+  exp <- read.table(file,sep = '\t',header = T,row.names = 1)
+  Group <- read.csv(config_file,sep = '\t',header = F,row.names = 1)[colnames(exp),] %>% na.omit()
+  Group$V2 <- sapply(strsplit(Group$V2,';'), function(x) x[1])
+  Group <- as.data.frame(rownames_to_column(Group)[,1:2]) %>% arrange(V2)
+  colnames(Group) <- c('Sample','Group')
+  exp <- exp[,Group$Sample]
+  
+  if (max(exp)<100) {exp<-2**exp};rownames(exp) <- str_to_upper(rownames(exp))
+  results <- CIBERSORT::cibersort(sig_matrix=LM22, mixture_file=exp, perm = 100, QN = F)
+  df <- results[,1:22];df <- df[,apply(df, 2, function(x){sum(x)>0})]
+  
+  write.table(cbind(cell=colnames(results),t(results)),paste0(outdir,'/CIBERSORT_result.xls'),
+              sep ="\t",quote=F,col.names =T,row.names=F)
+  
+  cibersort_data <- rownames_to_column(as.data.frame(100*df),var='Sample')
+  ciber <- melt(left_join(cibersort_data,Group,by='Sample'),id.vars = c('Sample','Group'))
+  colnames(ciber) <- c('Sample','Group','CellType','Percent')
+  ciber$CellType <- factor(ciber$CellType,levels = names(sort(colSums(df),decreasing = T)))
+  ciber$Percent <- as.numeric(ciber$Percent)
+  
+  ciber$Sample <- factor(ciber$Sample,levels = unique(ciber$Sample))
+  ciber <- ciber %>% group_by(Sample) %>% arrange(Sample,desc(CellType)) %>%
+    mutate(cumsum = cumsum(Percent))
+  
+  return(list(exp,Group,df,ciber))
+}
+
+Heatmap_plot <- function(df,Group,color,outdir){
+  names(color) <- unique(Group$Group)
+  grp = HeatmapAnnotation(group = Group$Group,col = list(group = color[1:length(unique(Group$Group))]),
+                          show_annotation_name = F,show_legend = T,simple_anno_size = unit(0.2, "cm"))
+  
+  dat <- t(df)[names(sort(colSums(df),decreasing = T)),]
+  n <- floor(max(dat*100))/100
+  col_fun0 <- colorRamp2(c(0, n/6, n/3, n/2, 2*n/3, 5*n/6,n), 
+                         c("#4575B4","#91BFDB","#E0F3F8","#FFFFBF","#FEE090","#FC8D59","#D73027"))
+  show_col <- ifelse(ncol(dat)>15,F,T)
+  w <- 2.5 + max(nchar(Group$Group))/10 + max(nchar(rownames(dat)))/10
+  pA <- Heatmap(dat,border = F,show_heatmap_legend = T,col = col_fun0,top_annotation = grp,
+                heatmap_legend_param = list(title = "",title_position = "leftcenter-rot",legend_height = unit(6, "cm")),
+                show_row_names = T,show_column_names = show_col,row_names_side = "left",
+                cluster_rows = F,cluster_columns = F,column_names_rot = 60)
+  pdf(paste0(outdir,'/CIBERSORT_result.heatmap.pdf'),w=w,h=4.5)
+  draw(pA, merge_legend = TRUE);dev.off()
+  
+  row <- t(df)[names(sort(colSums(df),decreasing = T)),]
+  for (i in 1:nrow(row)) {row[i,] <- scale(row[i,])};row[row > 3] = 3;row[row < -3] = -3
+  col_fun <- colorRamp2(c(-3, -2, -1, 0, 1, 2, 3), 
+                        c("#4575B4","#91BFDB","#E0F3F8","#FFFFBF","#FEE090","#FC8D59","#D73027"))
+  pB <- Heatmap(row,border = F,show_heatmap_legend = T,top_annotation = grp,col = col_fun,
+                heatmap_legend_param = list(title = "",title_position = "leftcenter-rot",legend_height = unit(6, "cm")),
+                show_row_names = T,show_column_names = show_col,row_names_side = "left",
+                cluster_rows = F,cluster_columns = F,column_names_rot = 60)
+  pdf(paste0(outdir,'/CIBERSORT_result.cell_normalization.heatmap.pdf'),w=w,h=4.5)
+  draw(pB, merge_legend = TRUE);dev.off()
+}
+
+Cell_Percent <- function(ciber,color,outdir){
+  digits <- ifelse(length(unique(ciber$Sample))<18,2,0)
+  p1 <- ggplot(ciber,aes(Sample,Percent,fill=CellType))+
+    geom_col()+theme_test()+
+    scale_y_continuous(expand = c(0,0),limits = c(0,100.1))+
+    scale_fill_manual(values=color)+
+    xlab('')+ylab('Percent(%)')+ggtitle("Cell Percent")+
+    theme(axis.text.x = element_text(angle=45,vjust=1,hjust=1,size = 15),
+          axis.title.y = element_text(size = 15),
+          plot.title = element_text(size = 17),
+          legend.title = element_text(size=17),
+          legend.text = element_text(size=15))
+  if(length(unique(ciber$Sample))<50){
+    p1 <- p1 + geom_text(data=filter(ciber,Percent>10),color='white',
+              aes(x=Sample,y=cumsum-0.5*Percent,
+                  label = round(Percent,digits=digits)))
+  }else{p1 <- p1 + theme(axis.text.x = element_blank(),axis.ticks=element_blank())}
+  w <- min(2.5 + 2*log2(length(unique(ciber$Sample))),14)
+  pdf(paste0(outdir,'/Immune_cell_percent.pdf'),width = w,height = 5.5)
+  print(p1);dev.off()
+}
+
+Box_plot <- function(ciber,color,outdir){
+  p2 <- ggplot(ciber, aes(x = CellType, y = Percent))+
+    geom_boxplot(aes(fill = Group),position=position_dodge(0.55),width=0.4,outlier.shape = NA)+
+    scale_fill_manual(values=color)+
+    xlab('') + ylab('Cell Percent') +
+    theme_test() +
+    theme(axis.text.x = element_text(size= 14, angle = 45, hjust = 1),
+          axis.title = element_text(size= 15),
+          legend.title = element_text(size=16),
+          legend.text = element_text(size=15),
+          legend.position = "top",
+          plot.margin = margin(b = 0,t = 5,l = 25,r = 15)) +
+    stat_compare_means(aes(group = ciber$Group),label = "p.signif",
+                       method = "t.test",hide.ns = T)
+  
+  pdf(paste0(outdir,'/Immune_cell.boxplot.pdf'),w=7,h=6)
+  print(p2);dev.off()
+}
+
+Cell_correlation <- function(df,outdir){
+  mdata <- correlate(df,method = "spearman")
+  cor_P <- mdata$p
+  cor_P[cor_P<0.001] <- '***'
+  cor_P[cor_P<0.01 & cor_P > 0.001] <- '**'
+  cor_P[cor_P<0.05 & cor_P > 0.01] <- '*'
+  cor_P[cor_P > 0.05] <- ''
+  
+  col_fun <- colorRampPalette(c("#008837","white","#7B3294"))(50)
+  p<-Heatmap(mdata$r,border = F,show_heatmap_legend = T,
+             heatmap_legend_param = list(title = "Spearman",title_position = "leftcenter-rot",
+                                         legend_height = unit(6, "cm")),
+             show_row_names = T,show_column_names = T,col = col_fun,
+             cluster_rows = T,cluster_columns = T,
+             row_dend_width = unit(10, "mm"),
+             cell_fun = function(j, i, x, y, width, height, fill) {
+               grid.text(cor_P[i, j], x, y, gp = gpar(fontsize = 10))})
+  pdf(paste0(outdir,'/Cell.correlation.pdf'),height=6,width=6.8)
+  print(p);dev.off()
+}
+
+Cell_gene_correlation <- function(exp,df,gene,outdir){
+  gene <- rownames(exp)[str_to_upper(rownames(exp)) %in% str_to_upper(strsplit(gene,',')[[1]])]
+  mdata <- correlate(df,method = "spearman")
+  mantel <- correlate(t(exp[gene,]),df,method = "spearman")
+  a <- melt(mantel$r, value.name =  c('Spearman'))
+  b <- melt(mantel$p, value.name = c('Pvalue'))
+  mantel <- cbind(a,b)[,c(1:3,6)]
+  colnames(mantel) <- c('Geneid','CellType','Spearman','Pvalue')
+  cor <- round(quantile(abs(mantel$Spearman),0.8),digits = 2)
+  mantel <- mantel %>% mutate(rcut = cut(Spearman, breaks = c(-Inf, -cor, cor, Inf),
+                                         labels = c(paste0('< -',cor), paste0('-',cor,' ~ ',cor), paste0('>= ',cor))),
+                              pcut = cut(Pvalue, breaks = c(-Inf, 0.01, 0.05, Inf),
+                                         labels = c("< 0.01", "0.01 - 0.05", ">= 0.05")))
+  
+  write.table(mantel[c('Geneid','CellType','Spearman','Pvalue')],
+              paste0(outdir,'/Cell_Gene.correlation.xls'),
+              sep ="\t",quote=F,col.names =T,row.names=F)
+  
+  p<-qcorrplot(mdata,type = "lower",diag = FALSE) + 
+    geom_square() +
+    geom_couple(data = mantel, aes(colour = rcut,size = pcut), node.colour = 'grey50',
+                node.fill = 'white',curvature = nice_curvature()) + 
+    #scale_fill_gradientn(colours = brewer.pal(11, "RdYlGn")) + # RdBu
+    scale_fill_gradientn(colours = colorRampPalette(c("#1A9850","#A6D96A","#FFFFBF","#F46D43","#D73027"))(50))+
+    scale_size_manual(values = c(0.9, 0.6, 0.3)) + 
+    scale_colour_manual(values =c('#53A85F','#CFCECC','#E64B35FF')) + 
+    geom_mark(size = 3, sig_level = c(0.05, 0.01, 0.001),
+              only_mark = TRUE,sig_thres = 0.05, color = 'black') +
+    theme(axis.text = element_text(size= 10)) +
+    guides(size = guide_legend(title = "Pvalue", order = 1,
+                               override.aes = list(colour = "grey35")),
+           colour = guide_legend(title = "Spearman", order = 2,
+                                 override.aes = list(size = 1)),
+           fill = guide_colorbar(title = "Spearman", order = 3))
+  
+  pdf(paste0(outdir,'/Cell_Gene.correlation.pdf'),height=8,width=9)
+  print(p);dev.off()
+}
+################################################################################
+cat("\n===========================Cibersort analysis============================\n\n")
+dat <- Cibersort_analysis(file,config_file,outdir)
+cat("\n=============================Analysis Done!==============================\n\n")
+
+exp <- dat[[1]];Group <- dat[[2]];df <- dat[[3]];ciber <- dat[[4]]
+
+Heatmap_plot(df,Group,color,outdir)
+
+Cell_Percent(ciber,color,outdir)
+  
+Box_plot(ciber,color,outdir)
+  
+Cell_correlation(df,outdir) 
+
+if(!is.na(gene)){Cell_gene_correlation(exp,df,gene,outdir)}
+
+cat("\n************************************************\n")
+cat("*                                              *\n")
+cat("*              Done, done, done                *\n")
+cat("*                                              *\n")
+cat("************************************************\n")

@@ -1,0 +1,210 @@
+#!/usr/bin/Rscript
+suppressPackageStartupMessages({
+library(argparser)
+library(ggplot2)
+library(rstatix)
+library(stringr)
+library(ggforce)
+library(ggpubr)
+library(tibble)
+library(dplyr)
+})
+
+parse <- arg_parser("===================================================================\nThis script is used for plot violin picture of gene expression, use pvalue of limma package to draw between two groups\n===================================================================",hide.opts = T)
+
+parse <- add_argument(parse, "--file", 
+    help="Gene expression file of DEG results (such as: DEG/Control__Treat/All_Gene_expr.xls)")
+parse <- add_argument(parse, "--config_file",
+    help="config file containing sample information")
+parse <- add_argument(parse, "--gene",
+    help="The gene used for drawing, If there are multiple genes, separate them with commas")
+parse <- add_argument(parse, "--modify_group",
+    help="You can specify this parameter if you need to modify the group name, such as:Normal__Tumour")
+parse <- add_argument(parse, "--adjust",default=F,
+    help="Whether to use adjust pvalue for drawing, this parameter can be either TURE or FALSE (logical value)")
+parse <- add_argument(parse, "--outdir",
+    help="Output directory of this result [default='./*_supp/expression/']")
+
+argv <- parse_args(parse)
+if(is.na(argv$file)|is.na(argv$config_file)|is.na(argv$gene)){cat('\nThe parameters <file> <config_file> and <gene> is required\n\n');print(parse);quit()}
+if(!(argv$adjust %in% c(T,F))){cat('\nThe parameters <adjust> can be either TURE or FALSE\n\n');print(parse);quit()}
+file <- argv$file
+config_file <- argv$config_file
+gene <- argv$gene
+modify_group <- argv$modify_group
+adjust <- argv$adjust
+
+if (!is.na(argv$outdir)) {
+  outdir <- argv$outdir
+}else if(endsWith(strsplit(file,'/')[[1]][1],'_supp')) {
+  outdir <- paste0(strsplit(file,'/')[[1]][1],'/expression/')
+}else if(endsWith(strsplit(file,'/')[[1]][2],'_supp')) {
+  outdir <- paste0(strsplit(file,'/')[[1]][2],'/expression/')
+}else{outdir <- './supp/expression'}
+
+# file <- '/project/lidong/mRNA/DSZHC250531/GSE280609_supp/DEG/myopia__control/All_Gene_expr.xls'
+# config_file <- '/project/lidong/mRNA/DSZHC250531/GSE280609_config'
+# gene <- 'DDX3X,SRRM4,CSTF2,RC3H1,TIA1'
+# gene <- 'DDX3X,SRRM4,CSTF2,RC3H1'
+# modify_group <- NA
+# adjust <- F
+# outdir <- '/project/lidong/mRNA/DSZHC250531/GSE280609_supp/expression/'
+
+Sort_data <- function(file,df,config,gene,modify_group){
+  Pval <- df[gene,grep('P.Value',colnames(df),ignore.case=T)]
+  adjP <- df[gene,grep('adj.P.Val',colnames(df),ignore.case=T)]
+  
+  df <- rownames_to_column(as.data.frame(t(df[gene,1:(ncol(df)-6)])),var = 'Sample') %>% 
+    mutate(Group = config[match(Sample, config$V1), 2])
+  colnames(df)[2] <- 'exp'
+  
+  comp <- strsplit(basename(dirname(file)),'__')[[1]]
+  Group <- unlist(strsplit(df$Group,';'))[unlist(strsplit(df$Group,';')) %in% comp]
+  df$Group <- Group
+  
+  if (!is.na(modify_group)) {
+    modify_group <- strsplit(modify_group,'__')[[1]]
+    # 对照在前，处理在后，unique(df$Group)[1]必为对照
+    df$Group <- gsub(as.character(unique(df$Group)[1]),modify_group[1],df$Group)
+    df$Group <- gsub(as.character(unique(df$Group)[2]),modify_group[2],df$Group)
+  }
+  
+  df$exp <- as.numeric(df$exp)
+  df$Geneid <- gene;df$Pval <- Pval;df$adjP <- adjP
+  df$Group <- factor(df$Group,levels = unique(df$Group))
+  #Pval <- t.test(df$exp[df$Group==unique(df$Group)[1]],df$exp[df$Group==unique(df$Group)[2]])$p.value
+  return(df)
+}
+
+Get_xy <- function(df) {
+  m <- df %>% group_by(Group) %>% summarise(m = max(exp))
+  n <- df %>% group_by(Group) %>% summarise(m = min(exp))
+  if (abs(max(m$m)-min(m$m))>abs(max(n$m)-min(n$m))) {
+    x <- which(m$m==min(m$m))
+    y <- mean(c(max(m$m),min(m$m)))
+  } else {
+    x <- which(n$m==max(n$m))
+    y <- mean(c(max(n$m),min(n$m)))
+  }
+  return(list(x,y))
+}
+
+plot_violin <- function(df,adjust,geoid,gene,x,y,outdir) {
+  col <- c("#E64B35FF","#7E6148FF","palevioletred", "#00A087FF", "#3C5488FF", "lightblue", "#F39B7FFF")
+  if (adjust) {
+    print(unique(df$adjP))
+    if (unique(df$adjP)<0.001) {label = 'adjP < 0.001 '} else {label = paste0('adjP = ',format(round(unique(df$adjP),3),nsmall = 3))}
+  }else{
+    print(unique(df$Pval))
+    if (unique(df$Pval)<0.001) {label = 'Pval < 0.001 '} else {label = paste0('Pval = ',format(round(unique(df$Pval),3),nsmall = 3))}
+    }
+  
+  n <- max(df$exp)-min(df$exp)
+
+  add_number <- function(x) {
+    number <- table(df$Group)
+    paste0(x, "\n(n=", number[x], ")")
+    }
+
+  p<-ggplot(df,aes(Group,exp,fill = Group)) + 
+    geom_violin() +
+    scale_fill_manual(values = sample(col,size = 2)) +
+    geom_boxplot(width=0.1,position = position_identity(),fill="white") +
+    theme_test() +
+    xlab('') + ylab(paste0('log2(exp+1)')) + ggtitle(paste0(gene,'(',geoid,')')) +
+    #geom_sina(alpha=0.5,size=2,color="black")
+    theme(plot.title = element_text(hjust=0,size = 22),
+          axis.text.x = element_text(size = 22),
+          axis.text.y = element_text(size = 17),
+          axis.title.y = element_text(size = 22),
+          legend.position = "none",
+          plot.margin = margin(t = 15,r = 25,l = 10,b = 5)) +
+    scale_y_continuous(expand = c(0,0),limits = c(min(df$exp)-n/20,max(df$exp)+n/20)) + 
+    scale_x_discrete(labels = add_number) +
+    annotate("text", x = x, y = y, label = label,size = 7.8,fontface = "italic")
+  
+  pdf(paste0(outdir,'/',paste(unique(df$Group),collapse = '_VS_'),'.',gene,'.violin.pdf'),w=4.6,h=4.8)
+  print(p);dev.off()
+}
+
+plot_box <- function(dat,gene,adjust,geoid,outdir) {
+  dat$Geneid <- factor(dat$Geneid,levels = gene)
+  col <- c("#E64B35FF","palevioletred", "#00A087FF", "#3C5488FF", "lightblue", "#F39B7FFF")
+  
+  position <- dat %>% 
+    group_by(Geneid) %>%
+    t_test(exp ~ Group) %>%
+    add_xy_position(x='Geneid',dodge = 1)
+  
+  pval <- unique(dat[,c("Geneid","Pval","adjP")])
+  pval <- cbind(pval,position[,c("group1","group2","y.position","x","xmin","xmax")])
+  
+  if(adjust){
+    pval$signif <- ifelse(pval$adjP>0.05,'ns',ifelse(pval$adjP>0.01,'*',ifelse(pval$adjP>0.001,'**','***')))
+  }else{
+    pval$signif <- ifelse(pval$Pval>0.05,'ns',ifelse(pval$Pval>0.01,'*',ifelse(pval$Pval>0.001,'**','***')))
+  }
+  
+  group_levels <- levels(factor(dat$Group))
+  n_counts <- table(dat[dat$Geneid %in% dat$Geneid[1],]$Group)[group_levels]  # 按因子顺序取
+  legend_labels <- paste0(names(n_counts), "\n(n=", n_counts,')')
+
+  p<-ggplot(dat,aes(Geneid,exp,fill = Group)) + 
+    geom_boxplot(outlier.shape = NA) +
+    scale_fill_manual(values = sample(col,size = 2),labels = legend_labels) +
+    theme_test() + xlab('') + ylab("log2(exp+1)") + ggtitle(geoid) +
+    theme(plot.title = element_text(size = 18),
+          axis.text.x = element_text(angle=45,size = 17,hjust=1,vjust = 1),
+          axis.title.y = element_text(size = 18),
+          legend.position = "top",
+          legend.title = element_text(size=18),
+          legend.text = element_text(size=17,hjust = 0.5),
+          plot.margin = margin(t = 15,r = 25,l = 10,b = 5)) +
+    stat_pvalue_manual(
+      pval,  label = "{signif}", 
+      tip.length = 0, hide.ns = TRUE
+    )
+  pdf(paste0(outdir,'/',paste(unique(df$Group),collapse = '_VS_'),'.',paste(gene,collapse = '_'),'.box.pdf'),
+      w=3.5+length(gene)/4.2,h=5)
+  print(p);dev.off()
+}
+#########################################################################################
+gene <- unique(strsplit(gene,',')[[1]])
+geoid <- gsub('_supp','',strsplit(file,'/')[[1]][grep('_supp',strsplit(file,'/')[[1]])])
+if (!file.exists(outdir)){dir.create(outdir)}
+
+cat("\n<==============================loading data===============================>\n\n")
+exp <- read.csv(file,sep = '\t',header = T,row.names = 1)
+config <- read.csv(config_file,sep = '\t',header = F)
+
+if(names(which.max(table(rownames(exp) == str_to_upper(rownames(exp)))))){
+  gene <- str_to_upper(gene)} else if(names(which.max(table(rownames(exp) == str_to_lower(rownames(exp)))))){
+  gene <- str_to_lower(gene)} else{gene <- str_to_title(gene)}
+feature <- setdiff(gene,rownames(exp))
+if (length(feature)>0){cat(paste0("Warning, these genes were not found in the data: [",feature,"]\n"))}
+gene <- intersect(gene,rownames(exp))
+cat("\n<=========================Data loading completed==========================>\n\n")
+
+if(length(gene)==1){
+  df <- Sort_data(file,exp,config,gene,modify_group)
+  print(df)
+  xy <- Get_xy(df)
+  plot_violin(df,adjust,geoid,gene,xy[[1]],xy[[2]],outdir)
+}else {
+  if(exists('dat')){rm('dat')}
+  for (g in gene) {
+    cat(paste0('\nPerformed single gene differential expression analysis for this gene: [',g,']\n'))
+    df <- Sort_data(file,exp,config,g,modify_group)
+    xy <- Get_xy(df)
+    plot_violin(df,adjust,geoid,g,xy[[1]],xy[[2]],outdir)
+    if(exists('dat')){dat <- rbind(dat,df)}else{dat <- df}
+  }
+  cat('\nExpression box plot of all genes\n')
+  plot_box(dat,gene,adjust,geoid,outdir)
+}
+
+cat("\n************************************************\n")
+cat("*                                              *\n")
+cat("*              Done, done, done                *\n")
+cat("*                                              *\n")
+cat("************************************************\n")
