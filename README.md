@@ -38,13 +38,23 @@
 
 ## 配置环境
 
-大部分脚本为R编写，需要安装相应R包。
-所有脚本均需要：R包:argparser
-mRNA_DEG ---- R包：stringr,ggplot2,ComplexHeatmap,circlize,limma,dplyr,RColorBrewer
-enrich_term ---- python模块：multiprocessing,argparse,time,os,re
-                 R包：ggplot2,clusterProfiler,ReactomePA,dplyr,DOSE,qs2,
-                 所分析物种的R包：org.Hs.eg.db,org.Mm.eg.db,org.Rn.eg.db
+大部分脚本为 R 编写，需要安装相应的 R 包。
 
+**基础依赖（所有脚本必需）：**
+- R 包：`argparser`
+
+**各脚本所需依赖：**
+
+- **mRNA_DEG**: `stringr`, `ggplot2`, `ComplexHeatmap`, `circle`, `limma`, `dplyr`, `RColorBrewer`
+- **Volcano**: `ggplot2`, `stringr`, `dplyr`
+- **expression**: `ggplot2`, `rstatix`, `stringr`, `ggforce`, `ggpubr`, `tibble`, `dplyr`
+- **enrich_term**: 
+  - Python 模块：`multiprocessing`, `argparse`, `time`, `os`, `re`
+  - R 包：`ggplot2`, `clusterProfiler`, `ReactomePA`, `dplyr`, `DOSE`, `qs2`
+  - 所分析物种的 R 包：`org.Hs.eg.db`, `org.Mm.eg.db`, `org.Rn.eg.db`
+- **GSEA**: `clusterProfiler`, `ComplexHeatmap`, `RColorBrewer`, `enrichplot`, `msigdbr`, `ggplot2`, `dplyr`
+- **Cor_curve**: `linkcomm`, `reshape2`, `ggplot2`, `ggrepel`, `stringr`, `tibble`, `linkET`, `WGCNA`, `dplyr`
+- **Cor_point**: `stringr`, `ggplot2`, `ggpmisc`, `ggpubr`
 
 ## 使用方法
 
