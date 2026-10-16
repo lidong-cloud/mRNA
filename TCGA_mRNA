@@ -1,0 +1,141 @@
+#!/usr/bin/env Rscript
+library(argparser)
+
+parse <- arg_parser("=====================================================================\nThis script is used for obtaining the expression and clinical data of cancer from TCGA\n=====================================================================",
+                    hide.opts = T)
+parse <- add_argument(parse, "--project", 
+                      help="The number of cancer in TCGA,such as:TCGA-LUAD")
+parse <- add_argument(parse, "--TCGA_dir", default = "/nas/database/TCGA/",
+                      help="The download location of original data,")
+parse <- add_argument(parse, "--outdir", default = "./", 
+                      help="Output directory")
+
+argv <- parse_args(parse)
+if(is.na(argv$project)){cat('\nThe parameters <project> is required\n\n');print(parse);quit()}
+project <- argv$project
+TCGA_dir <- argv$TCGA_dir
+outdir <- argv$outdir
+
+suppressMessages({
+library(dplyr)
+})
+
+# project <- 'TCGA-LUAD'
+# outdir <- 'G:/Ledug/Desktop/b-handle/TCGA/肺癌/LUAD/'
+# TCGA_dir <- '/nas/database/TCGA'
+
+
+if (!file.exists(paste0(TCGA_dir,'/',project,'.star_counts.tsv.gz'))) {
+  download.file(paste0('https://gdc-hub.s3.us-east-1.amazonaws.com/download/',project,'.star_counts.tsv.gz'),
+                paste0(outdir,'/',project,'.star_counts.tsv.gz'))
+  file.copy(paste0(outdir,'/',project,'.star_counts.tsv.gz'),paste0(TCGA_dir,'/',project,'.star_counts.tsv.gz'))
+}
+
+if (!file.exists(paste0(TCGA_dir,'/',project,'.clinical.tsv.gz'))) {
+  download.file(paste0('https://gdc-hub.s3.us-east-1.amazonaws.com/download/',project,'.clinical.tsv.gz'),
+                paste0(outdir,'/',project,'.clinical.tsv.gz'))
+  file.copy(paste0(outdir,'/',project,'.clinical.tsv.gz'),paste0(TCGA_dir,'/',project,'.clinical.tsv.gz'))
+}
+
+if (!file.exists(paste0(TCGA_dir,'/annotation.probemap'))) {
+  download.file(paste0('https://gdc-hub.s3.us-east-1.amazonaws.com/download/gencode.v36.annotation.gtf.gene.probemap'),
+                paste0(outdir,'/annotation.probemap'))
+  file.copy(paste0(outdir,'/annotation.probemap'),paste0(TCGA_dir,'/annotation.probemap'))
+}
+
+sort_exp <- function(exp) {
+  colnames(exp) <- c('ID',gsub('\\.','_',colnames(exp)[-1]))
+  exp <- exp %>% mutate(mean = rowMeans(across(where(is.numeric)))) %>% 
+    arrange(ID,desc(mean))
+  exp[,2:ncol(exp)] <- (2**exp[,2:ncol(exp)])-1
+  exp <- exp[!duplicated(exp[,1]), 1:(ncol(exp)-1)]
+  return(exp)
+}
+
+sort_clinical <- function(clinical) {
+  # 数据过滤
+  clinical <- clinical[!(is.na(clinical$days_to_last_follow_up) & is.na(clinical$days_to_death)),]
+  clinical <- clinical[!is.na(clinical$vital_status),]
+  
+  # 计算生存时间
+  clinical$days_to_death[is.na(clinical$days_to_death)] <- 0
+  clinical$days_to_last_follow_up[is.na(clinical$days_to_last_follow_up)] <- 0
+  clinical$days=as.numeric(clinical$days_to_last_follow_up)+as.numeric(clinical$days_to_death)
+  clinical$Time=round(clinical$days/30,2)
+  
+  # 筛选数据
+  clinical$Sample <- gsub('-','_',clinical$sample)
+  clinical$Event <- ifelse(clinical$vital_status=='Alive',0,1)
+  if (!is.null(clinical$ajcc_pathologic_stage)) {
+    clinical$Stage <- unlist(lapply(strsplit(clinical$ajcc_pathologic_stage,' '), function(x) x[2]))
+  }else if(!is.null(clinical$inss_stage)){
+    clinical$Stage <- unlist(lapply(strsplit(clinical$inss_stage,' '), function(x) x[2]))
+  }else if(!is.null(clinical$iss_stage)){
+    clinical$Stage <- clinical$iss_stage
+  }
+  colnames(clinical)[grep('race',colnames(clinical))] <- 'Race'
+  n <- grep('gender',colnames(clinical))
+  colnames(clinical)[n[!grepl('relationship',colnames(clinical)[n])]] <- 'Gender'
+  colnames(clinical)[grep('age_at_index',colnames(clinical))] <- 'Age'
+  colnames(clinical)[grep('tissue_type',colnames(clinical))] <- 'Type'
+  colnames(clinical)[grep('ethnicity',colnames(clinical))] <- 'Ethnicity'
+  colnames(clinical)[grep('pack_years_smoked',colnames(clinical))] <- 'Smoked_pack'
+  colnames(clinical)[grep('years_smoked',colnames(clinical))] <- 'Smoked_years'
+  colnames(clinical)[grep('prior_malignancy',colnames(clinical))] <- 'Prior_malignancy'
+  if(!is.null(clinical$ajcc_pathologic_t)){clinical$T_ajcc <- clinical$ajcc_pathologic_t}else if(!is.null(clinical$ajcc_clinical_t)){clinical$T_ajcc <- clinical$ajcc_clinical_t}
+  if(!is.null(clinical$ajcc_pathologic_n)){clinical$N_ajcc <- clinical$ajcc_pathologic_n}else if(!is.null(clinical$ajcc_clinical_n)){clinical$N_ajcc <- clinical$ajcc_clinical_n}
+  if(!is.null(clinical$ajcc_pathologic_m)){clinical$M_ajcc <- clinical$ajcc_pathologic_m}else if(!is.null(clinical$ajcc_clinical_m)){clinical$M_ajcc <- clinical$ajcc_clinical_m}
+
+  cname <- c("Sample","Time","Event",
+             colnames(clinical)[c(grep('Stage',colnames(clinical)),
+                                  grep('Race',colnames(clinical)),
+                                  grep('Gender',colnames(clinical)),
+                                  grep('Age',colnames(clinical)),
+                                  grep('Type',colnames(clinical)),
+                                  grep('Ethnicity',colnames(clinical)),
+                                  grep('Smoked_pack',colnames(clinical)),
+                                  grep('Prior_malignancy',colnames(clinical)),
+                                  grep('T_ajcc',colnames(clinical)),
+                                  grep('N_ajcc',colnames(clinical)),
+                                  grep('M_ajcc',colnames(clinical)))])
+  clinical$Race <- gsub("black or african american",'black',clinical$Race)
+  clinical$Race <- gsub("native hawaiian or other pacific islander",'pacific islander',clinical$Race)
+  clinical$Race <- gsub("american indian or alaska native",'native americans',clinical$Race)
+  return(clinical[,cname])
+}
+################################################################################
+cat('\nReading data......')
+mRNA <- read.csv(paste0(TCGA_dir,'/',project,'.star_counts.tsv.gz'),sep = '\t',header = T)
+clinical <- read.csv(paste0(TCGA_dir,'/',project,'.clinical.tsv.gz'),sep = '\t',header = T)
+probeMap <- read.table(paste0(TCGA_dir,'/annotation.probemap'),sep = "\t" , header = T)[,c(1,2)]
+cat('\n=========================Data reading completed==========================\n\n')
+
+mRNA <- merge(probeMap, mRNA, by.x = "id", by.y = "Ensembl_ID" )[,-1]
+mRNA <- sort_exp(mRNA)
+clinical <- sort_clinical(clinical)
+
+names <- colnames(mRNA)[-1]
+if(unique(unlist(lapply(strsplit(names,'_'),function(x) x[1])))=='TCGA'){
+  names <- names[unlist(lapply(strsplit(names,'_'),function(x) x[4])) %in% c('01A','11A')]
+}
+
+clinical <- clinical[clinical$Sample %in% names,]
+mRNA <- mRNA[,c('ID',names)]
+
+type <- gsub('01A','Tumor',gsub('11A','Normal',unlist(lapply(strsplit(names,'_'),function(x) x[4]))))
+config <- cbind(names,type,'Normal__Tumor')
+
+cat('\n=======================Data processing completed=========================\n')
+cat('Outputting data......\n')
+write.table(mRNA, paste0(outdir,"/",project,"_exp.xls"),
+            sep = '\t',quote = F,row.names = F,col.names = T)
+write.table(clinical, paste0(outdir,"/",project,"_clinical.xls"),
+            sep = '\t',quote = F,row.names = F,col.names = T)
+write.table(config, paste0(outdir,"/",project,"_config"),
+            sep = '\t',quote = F,row.names = F,col.names = F)
+            
+cat("\n\n************************************************\n")
+cat("*                                              *\n")
+cat("*            Data download complete            *\n")
+cat("*                                              *\n")
+cat("************************************************\n\n")
