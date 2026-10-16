@@ -18,7 +18,11 @@
 
 [heatmap_of_top_diff_genes.pdf](https://github.com/user-attachments/files/33536386/heatmap_of_top_diff_genes.pdf)
 
-### Volcano expression (基因表达可视化)
+### Volcano & expression (基因表达可视化)
+
+[Normal_VS_Tumor.UBE2C.violin.pdf](https://github.com/user-attachments/files/33537874/Normal_VS_Tumor.UBE2C.violin.pdf)
+
+[Normal_VS_Tumor.TPX2_NEK2_UBE2C_HOXC9_KIF18B.box.pdf](https://github.com/user-attachments/files/33537880/Normal_VS_Tumor.TPX2_NEK2_UBE2C_HOXC9_KIF18B.box.pdf)
 
 ### enrich_term & GSEA (富集分析)
 
