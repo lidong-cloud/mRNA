@@ -2,6 +2,16 @@
 
 一套针对GEO数据库进行生信分析的分析流程，主要包含数据整理、差异分析、富集分析、相关性分析及差异表达基因的可视化。
 
+## 结果示例
+
+### mRNA_DEG (差异分析)
+
+
+[heatmap_of_any_diff_genes.pdf](https://github.com/user-attachments/files/33536013/heatmap_of_any_diff_genes.pdf)
+
+
+## 配置环境
+
 ## 使用方法
 
 1. 所有脚本均需要在 Linux 系统下运行。
