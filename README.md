@@ -6,9 +6,12 @@
 
 ### mRNA_DEG (差异分析)
 
-
+[Sample_corr_heatmap.pdf](https://github.com/user-attachments/files/33536339/Sample_corr_heatmap.pdf)
+[Sample_PCA_correlation.pdf](https://github.com/user-attachments/files/33536342/Sample_PCA_correlation.pdf)
+[numbers_of_diff_genes.pdf](https://github.com/user-attachments/files/33536375/numbers_of_diff_genes.pdf)
+[volcano_plot.pdf](https://github.com/user-attachments/files/33536379/volcano_plot.pdf)
 [heatmap_of_any_diff_genes.pdf](https://github.com/user-attachments/files/33536013/heatmap_of_any_diff_genes.pdf)
-
+[heatmap_of_top_diff_genes.pdf](https://github.com/user-attachments/files/33536386/heatmap_of_top_diff_genes.pdf)
 
 ## 配置环境
 
