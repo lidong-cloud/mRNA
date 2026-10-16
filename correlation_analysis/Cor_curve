@@ -1,0 +1,254 @@
+#!/usr/bin/Rscript
+suppressPackageStartupMessages({
+library(argparser)
+})
+
+parse <- arg_parser("===================================================================\nThis script is used to analyze the correlation of gene expression and plot correlation curve\n===================================================================",hide.opts = T)
+
+parse <- add_argument(parse, "--degdir", 
+    help="The result path of DEG analysis, only one this parameter and file can be provide")
+parse <- add_argument(parse, "--file", 
+    help="Gene expression files can be divided into three types: 1.They only contain gene expression data. 2.with logFC and P.value. 3.DEG analysis results (such as:DEG/Control__Treat/Gene_expr_diff.xls)")
+parse <- add_argument(parse, "--sample", default='All',
+    help="Use all samples or only Treat group samples, If you provide file parameter, this parameter is invalid.(optional: All & Treat)")
+parse <- add_argument(parse, "--top", default=0.2,
+    help="Take the Top correlation value as the result")
+parse <- add_argument(parse, "--pvalue", default=0.05,
+    help="The pvalue cut off for the correlation ananysis")
+parse <- add_argument(parse, "--method", default='pearson',
+    help="The method of calculating correlation coefficient (optional: pearson & spearman)")
+parse <- add_argument(parse, "--gene",
+    help="The genes used to draw correlation curves, and if you don't provide it, I will choose three genes with strong correlation to plot the curve")
+parse <- add_argument(parse, "--Point",
+    help="Mark the points of these genes on the correlation curve")
+parse <- add_argument(parse, "--outdir",
+    help="Output directory of this result [default='./GSE*_supp/Correlation/]")
+
+argv <- parse_args(parse)
+if(is.na(argv$degdir)==is.na(argv$file)){cat('\nThe parameters <file> and <degdir> must be provided only one\n\n');print(parse);quit()}
+if((!is.na(argv$file))&is.na(argv$gene)){cat('\nYou have provided the <file> parameter, and the <gene> parameter is required\n\n');print(parse);quit()}
+if(!(argv$sample %in% c('All','Treat'))){cat('\nThe parameter <sample> can only be All and Treat\n\n');print(parse);quit()}
+if(!(argv$method %in% c('pearson','spearman'))){cat('\nThe parameter <method> can only be pearson and spearman\n\n');print(parse);quit()}
+if(argv$sample == 'Treat' & is.na(argv$degdir)){cat('\nYou cannot select sample if you provide the <file> parameter\n\n')}
+degdir <- argv$degdir
+file <- argv$file
+sample <- argv$sample
+top <- as.numeric(argv$top)
+pvalue <- as.numeric(argv$pvalue)
+method <- argv$method
+gene <- argv$gene
+point <- argv$Point
+
+if (!is.na(argv$outdir)) {
+  outdir <- argv$outdir
+}else if(is.na(file)) {
+  if(endsWith(strsplit(degdir,'/')[[1]][1],'_supp')) {
+    outdir <- paste0(strsplit(degdir,'/')[[1]][1],'/Correlation/')
+  }else if(endsWith(strsplit(degdir,'/')[[1]][2],'_supp')) {
+    outdir <- paste0(strsplit(degdir,'/')[[1]][2],'/Correlation/')
+  }
+}else if(!is.na(file)) {
+  if(endsWith(strsplit(file,'/')[[1]][1],'_supp')) {
+    outdir <- paste0(strsplit(file,'/')[[1]][1],'/Correlation/')
+  }else if(endsWith(strsplit(file,'/')[[1]][2],'_supp')) {
+    outdir <- paste0(strsplit(file,'/')[[1]][2],'/Correlation/')
+  }
+}else{outdir <- './supp/Correlation/'}
+
+# degdir <- '/project/lidong/mRNA/DSWMH251205/MMRF-COMMPASS-SNRPE_supp/DEG/'
+# file <- '/project/lidong/mRNA/DSWMH251205/MMRF-COMMPASS-SNRPE_supp/Gene_expr_diff.xls'
+# sample <- 'All' # Treat & All
+# top <- 0.2
+# pvalue <- 0.05
+# method <- 'pearson' # "pearson" & "spearman"
+# gene <- 'SNRPEP4,CCT3,DAP3'
+# point <- ''
+# outdir <- '/project/lidong/mRNA/DSWMH251205/MMRF-COMMPASS-SNRPE_supp/Correlation/'
+
+suppressPackageStartupMessages({
+library(linkcomm)
+library(reshape2)
+library(ggplot2)
+library(ggrepel)
+library(stringr)
+library(tibble)
+library(linkET)
+library(WGCNA)
+library(dplyr)
+})
+
+sort_data <- function(file,n,config,sample,outdir){
+  if (!file.exists(outdir)){dir.create(outdir)}
+  
+  exp <- data.frame(readr::read_tsv(file))
+  if(length(grep('AveExpr',colnames(exp),ignore.case = T))>0){
+    exp <- exp[order(abs(exp$logFC), decreasing=T)[1:min(nrow(exp),n)],]
+    regulation <- exp[,c('Geneid','logFC','P.Value')]
+    rownames(exp) <- exp[,1];exp <- t(exp[,2:(ncol(exp)-6)])
+  }else if(length(grep('logFC',colnames(exp),ignore.case = T))>0){
+    logfc <- grep('logFC',colnames(exp),ignore.case = T)
+    pvalue <- grep('P.Value',colnames(exp),ignore.case = T)
+    regulation <- exp[,c(1,logfc,pvalue)]
+    colnames(regulation)<- c('Geneid','logFC','P.Value')
+    rownames(exp) <- exp[,1];exp <- t(exp[,2:(ncol(exp)-2)])
+  }else{
+    regulation <- NA
+    rownames(exp) <- exp[,1];exp <- t(exp[,2:ncol(exp)])
+  }
+  if(max(exp)<100){exp <- 2**exp}
+  exp <- exp[,apply(exp,2,sd)>0]
+  
+  if (sample=='Treat') {
+    group <- strsplit(basename(outdir),'__')[[1]][2]
+    cat('\n');print('Remove control samples')
+    f <- function(x) {grp <- strsplit(as.character(x[2]),';')[[1]]
+      if (group %in% grp) {return(as.character(x[1]))}}
+    exp <- exp[unique(unlist(apply(config,1,f))),]
+  }
+  
+  return(list(exp,regulation))
+}
+
+Correlation_analysis <- function(exp,regulation,top,pvalue,method,outdir){
+  mdata <- correlate(exp,method = method)
+  #Gene_Cor <- cor(exp, use = "p", method = method)
+  #Gene_P <- corPvalueStudent(Gene_Cor, nrow(Gene_Cor))
+  
+  Gene_Cor <- melt(mdata$r);Gene_P <- melt(mdata$p)
+  df <- cbind(Gene_Cor,Gene_P)[,c(1,2,3,6)]
+  colnames(df) <- c('GeneA','GeneB','Correlation','Pvalue')
+  df$GeneA <- as.character(df$GeneA);df$GeneB <- as.character(df$GeneB)
+  
+  dat <- df[abs(df$Correlation) > quantile(abs(df$Correlation), 1-top) & df$Pvalue < 0.01,]
+  cat("\n<===========================Remove duplicatione===========================>\n\n")
+  dat <- dat[-edge.duplicates(dat)$inds,]
+  cat("\n<=======================Remove duplicate completion=======================>\n\n")
+  
+  if (length(is.na(regulation))>1) {
+    dat <- left_join(dat,regulation,by=c('GeneA' = 'Geneid'))
+    dat <- left_join(dat,regulation,by=c('GeneB' = 'Geneid'))
+    colnames(dat)[5:8] <- c("GeneA_logFC","GeneA_Pvalue","GeneB_logFC","GeneB_Pvalue")
+  }
+  
+  write.table(dat,paste0(outdir,'/Gene_exp_Correlation.top_',top,'.xls'),
+              sep = '\t',quote = F,col.names = T,row.names = F)
+  
+  return(dat)
+}
+
+Gene_correlation <- function(exp,gene,regulation,method,outdir){
+  gexp <- t(data.frame(t(exp))[gene,])
+  
+  #Gene_Cor <- cor(exp, gexp, use = "p", method = 'pearson');colnames(Gene_Cor) <- 'Correlation'
+  #Gene_P <- corPvalueStudent(Gene_Cor, nrow(exp));colnames(Gene_P) <- 'Pvalue'
+  mdata <- correlate(exp, gexp, method = method)
+  Gene_dat <- rownames_to_column(data.frame(cbind(mdata$r,mdata$p)),)
+  colnames(Gene_dat) <- c('Geneid','Correlation','Pvalue')
+  
+  if (length(is.na(regulation))>1) {
+    Gene_dat <- left_join(Gene_dat,regulation,by='Geneid')
+    colnames(Gene_dat)[c(4,5)] <- c("DEG_logFC","DEG_Pvalue")
+  }
+  Gene_dat <- Gene_dat[!(Gene_dat$Geneid %in% gene),]
+  write.table(Gene_dat,paste0(outdir,'/Correlation_',gene,'.xls'),
+              sep = '\t',quote = F,col.names = T,row.names = F)
+  
+  return(Gene_dat)
+}
+
+Gene_plot <- function(Gene_dat,top,gene,point,pvalue,outdir){
+  m <- sort(abs(Gene_dat$Correlation),decreasing = T)[2]+0.1
+  cor <- min(quantile(abs(Gene_dat$Correlation), 1-top),0.6)
+  data <- Gene_dat[Gene_dat$Geneid %in% point,]
+  
+  p <- ggplot(Gene_dat, aes(x = Correlation, y = -log10(Pvalue))) +
+    geom_point(size=2, aes(color=-log10(Pvalue))) +
+    scale_color_gradientn(values = c(0,0.33,0.66,1),
+                          colours = c('#3C5488FF','#00A087FF','orange','#DC0000FF'))+
+    scale_x_continuous(expand = c(0,0),limits = c(-m,m))+
+    geom_vline(xintercept=c(-cor,cor),lty=2,col="gray30",linewidth=0.5) +
+    geom_hline(yintercept = -log10(pvalue),lty=2,col="gray30",linewidth=0.5) +
+    theme_bw()+ggtitle(gene) +
+    theme(plot.title = element_text(size = 16),axis.title = element_text(size = 16),
+          legend.text = element_text(size=13),legend.title = element_text(size=15))
+  
+  if(nrow(data)>3){p <- p + 
+    geom_text_repel(data,mapping = aes(x = Correlation, y = -log10(Pvalue),label = Geneid),
+                           size=5,box.padding = 2, #字到点的距离
+                           point.padding = 0.1, #点周围的空白宽度
+                           min.segment.length = 0.1, #短线段可以省略
+                           segment.size = 0.2,
+                           segment.color = "black", #segment.colour = NA, 不显示线段
+                           max.overlaps = getOption("ggrepel.max.overlaps", default = 100),
+                           show.legend = F)
+    pdf(paste0(outdir,'/Correlation_',gene,'_VS_',paste(point,collapse = '_'),'.top_',top,'.pdf'),w=4.6,h=3.8)
+  }else if(nrow(data)>0){p <- p + 
+    geom_label_repel(data, mapping = aes(x = Correlation, y = -log10(Pvalue), label = Geneid), 
+                     size=5,box.padding = 4, #字到点的距离
+                     point.padding = 0.1, #点周围的空白宽度
+                     min.segment.length = 0.1, #短线段可以省略
+                     segment.size = 0.2,
+                     segment.color = "black", #segment.colour = NA, 不显示线段
+                     max.overlaps = getOption("ggrepel.max.overlaps", default = 100),
+                     show.legend = F)
+    pdf(paste0(outdir,'/Correlation_',gene,'_VS_',paste(point,collapse = '_'),'.top_',top,'.pdf'),w=4.6,h=3.8)
+  }else{pdf(paste0(outdir,'/Correlation_',gene,'.top_',top,'.pdf'),w=4.6,h=3.8)}
+  print(p);dev.off()
+}
+
+Correlation_plot <- function(exp,regulation,dat,top,pvalue,genes,point,method,outdir){
+  if (is.na(gene)) {genes <- unique(dat[order(dat$Correlation),]$GeneA)[1:3]}else{genes <- strsplit(genes,',')[[1]]}
+  if(!is.na(point)){point <- strsplit(point,',')[[1]]}
+    
+  if(names(which.max(table(colnames(exp) == str_to_upper(colnames(exp)))))){
+    genes <- str_to_upper(genes);point <- str_to_upper(point)} else if(names(which.max(table(colnames(exp) == str_to_lower(colnames(exp)))))){
+    genes <- str_to_lower(genes);point <- str_to_lower(point)} else{genes <- str_to_title(genes);point <- str_to_title(point)}
+
+  feature <- setdiff(genes,colnames(exp))
+  if (length(feature)>0){cat(paste0("Warning, these genes were not found in the data: [",feature,"]\n\n"))}
+  genes <- intersect(genes,colnames(exp))
+  feature <- setdiff(point,colnames(exp))
+  if (length(feature)>0){cat(paste0("Warning, these genes were not found in the data: [",feature,"]\n\n"))}
+  point <- intersect(point,colnames(exp))
+  
+  for (gene in genes) {
+    print(paste0('plot Correlation curve for gene: [',gene,']'));cat('\n')
+    Gene_dat <- Gene_correlation(exp,gene,regulation,method,outdir)
+    Gene_plot(Gene_dat,top,gene,point,pvalue,outdir)
+  }
+}
+################################################################################
+if (!file.exists(outdir)){dir.create(outdir)}
+
+
+if (!is.na(degdir)) {
+  config_file <- gsub('_supp','_config',dirname(degdir))
+  config <- read.csv(config_file,sep = '\t',header = F)
+  comps <- unique(config[,3])[nchar(unique(config[,3]))>0]
+  for (comp in comps) {
+    cat("\n\n<=========================================================================>\n")
+    print(paste0('Perform Correlation analysis of this compare group: ',comp))
+    cat("<=========================================================================>\n\n")
+    compdir <- paste0(outdir,'/',comp)
+    file <- paste0(degdir,'/',comp,'/Gene_expr_diff.xls')
+    df <- sort_data(file,2000,config,sample,compdir)
+    cat("\n<==========================Data reading complete==========================>\n\n")
+    dat <- Correlation_analysis(df[[1]],df[[2]],top,pvalue,method,compdir)
+    cat("\n<==========================Draw correlation curve=========================>\n\n")
+    file <- paste0(degdir,'/',comp,'/All_Gene_expr.xls')
+    df <- sort_data(file,80000,config,sample,compdir);cat('\n')
+    Correlation_plot(df[[1]],df[[2]],dat,top,pvalue,gene,point,method,compdir)
+  }
+}else{
+  cat('\n')
+  df <- sort_data(file,80000,'NA',sample,outdir)
+  cat("\n<==========================Draw correlation curve=========================>\n\n")
+  Correlation_plot(df[[1]],df[[2]],'NA',top,pvalue,gene,point,method,outdir)
+}
+
+
+cat("\n************************************************\n")
+cat("*                                              *\n")
+cat("*              Done, done, done                *\n")
+cat("*                                              *\n")
+cat("************************************************\n")
