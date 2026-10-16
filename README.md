@@ -18,6 +18,14 @@
 
 [heatmap_of_top_diff_genes.pdf](https://github.com/user-attachments/files/33536386/heatmap_of_top_diff_genes.pdf)
 
+### Volcano expression (基因表达可视化)
+
+### enrich_term & GSEA (富集分析)
+
+[Gene_expr_diff.go.enrich.pdf](https://github.com/user-attachments/files/33537129/Gene_expr_diff.go.enrich.pdf)
+
+[acute_inflammatory_response.GO_0002526.gsea.pdf](https://github.com/user-attachments/files/33537133/acute_inflammatory_response.GO_0002526.gsea.pdf)
+
 ## 配置环境
 
 ## 使用方法
