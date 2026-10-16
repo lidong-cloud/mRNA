@@ -9,5 +9,7 @@
    ```bash
    chmod 755 mRNA_DEG
 3. 查看脚本帮助文档，哪些是脚本必须参数，哪些是可选参数，补全必须参数即可分析。
+   ```bash
+   mRNA_DEG --help
 <img width="600" alt="image" src="https://github.com/user-attachments/assets/3949e740-d098-47fe-b9ce-8f38745fe015" />
 
